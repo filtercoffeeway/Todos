@@ -1,33 +1,33 @@
 {
 	"name": "Todos - Highlight text to Note",
-	"version": "0.0.6",
+	"version": "0.1.0",
 	"description": "Simple note taking application from any webpage !!!",
-	"manifest_version": 2,
-	"permissions": [ "storage" ],
-	"browser_action": {
+	"manifest_version": 3,
+	"permissions": [ "storage", "activeTab", "scripting" ],
+	"icons": {
+		"16": "images/icon16.png",
+		"48": "images/icon48.png",
+		"128": "images/icon128.png"
+	},
+	"action": {
 		"default_icon": "images/note.png"
 	},
 	"background": {
-		"scripts": [ "background.js" ],
-		"persistent": false
+		"service_worker": "background.js"
 	},
 	"chrome_url_overrides": {
 		"newtab": "todos.html"
 	},
-	"content_scripts": [
-		{
-			"matches": [ "<all_urls>" ],
-			"js": [ "content.js" ]
-		}
-	],
 	"commands": {
-		"_execute_browser_action": {
+		"_execute_action": {
 			"suggested_key": {
 				"default": "Ctrl+Q",
-				"mac": "Ctrl+E"
+				"mac": "Command+E"
 			},
 			"description": "Save Notes"
 		}
 	},
-	"content_security_policy": "script-src 'self' https://ajax.googleapis.com https://maxcdn.bootstrapcdn.com; object-src 'self'"
+	"content_security_policy": {
+		"extension_pages": "script-src 'self'; object-src 'self'"
+	}
 }
