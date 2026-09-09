@@ -37,7 +37,7 @@ Five files matter.
 | `manifest.json` | MV3 manifest. Permissions: `storage`, `activeTab`, `scripting`. Overrides `newtab` → `todos.html`. Binds `_execute_action` to `Cmd+E` / `Ctrl+Q`. |
 | `background.js` | Service worker. 52 lines. Two listeners: `onInstalled` (writes a welcome note), `action.onClicked` (reads the tab's selection via `chrome.scripting.executeScript` and appends it). |
 | `todos.html` | The new tab page. A clock, a logo, and one `<div class="input" id="data">` that holds every note. |
-| `todos.js` | 422 lines, everything else. Renders notes into DOM, handles Enter/Backspace/blur, serialises back to storage. All inside one `window.onload` closure with no exports. |
+| `todos.js` | 510 lines, everything else. Renders notes into DOM, handles Enter/Backspace/blur, serialises back to storage. All inside one `window.onload` closure with no exports. |
 | `css/style.css` | Indentation per nesting level is hardcoded as `.note1` (70px), `.note2` (160px), `.note3` (250px). |
 
 ### 2.1 The current data model
@@ -60,12 +60,12 @@ There are no ids, no timestamps, no completion state, no source URL — a note i
 
 Serialisation round-trip:
 
-- **Read** — `loadNotes()` (`todos.js:44`) → `createNotes()` (`todos.js:61`) walks the
+- **Read** — `loadNotes()` (`todos.js:81`) → `createNotes()` (`todos.js:100`) walks the
   array recursively, assigning DOM ids from a monotonic `noteId` counter. Top-level ids
   are `"0"`, `"1"`; children are `"<parentId>-<noteId>"`, e.g. `"2-7"`, `"2-7-11"`. The
   **number of dash-separated segments encodes the depth**, and the CSS class
   (`note1`/`note2`/`note3`) encodes it a second time.
-- **Write** — `save_notes()` (`todos.js:328`) walks `#data`'s children in document order,
+- **Write** — `save_notes()` (`todos.js:399`) walks `#data`'s children in document order,
   builds an intermediate array of `"note2-some text"` strings, then re-nests them into
   arrays by scanning for level transitions.
 
@@ -74,31 +74,34 @@ build F2–F5 on top of it.
 
 ### 2.2 Known landmines in the existing code
 
-Verify these before or while touching the surrounding code. They are not features, but
-several will bite whoever starts.
+**Phase 0 is done** (see §3) — the first four below are fixed, and are kept here as a
+record of what the code used to do, because the shape of each explains something about
+the design. The last two are still live and are resolved by Phase 1.
 
-- **`e.path` is non-standard and deprecated** — `todos.js:269` (`createSubTask`) and
-  `todos.js:415` (`removeNote`) both use `e.path[2].id`. `Event.path` is a Chrome-only
-  alias for the standard `Event.composedPath()`. Replace with `e.composedPath()[2]`, or
-  better, `e.target.closest('[class^="note"]')`. **Test the delete and subtask buttons
-  first thing** — if they are dead in current Chrome, this is why.
-- **`removedivbyid()` is an empty stub** (`todos.js:~408`) — its only line is commented
-  out. Backspace on an empty top-level line therefore does nothing. `removeNote()` does
-  its own `.remove()` and doesn't call it.
-- **Duplicate DOM ids** — `getRemoveBtn()` and `getSubTaskBtn()` both set `id="image"`
-  on their `<img>`, so every note contributes two elements with the same id.
-- **Positional `childNodes[2]`** — `save_notes()` reads note text as
-  `childNodes[i].childNodes[2].innerText`, i.e. "the third child is the text div".
-  Any change to the button markup silently corrupts saves.
+- ~~**`e.path` is non-standard and deprecated**~~ — *fixed in P0-1.* `createSubTask` and
+  `removeNote` used `e.path[2].id`; `Event.path` is a Chrome-only alias for
+  `Event.composedPath()`. Both now go through `rowOf(e)` (`todos.js:41`), which is
+  `e.target.closest('.note1, .note2, .note3')`.
+- ~~**`removedivbyid()` is an empty stub**~~ — *fixed in P0-2.* Its only line was
+  commented out, so backspace on an empty top-level line did nothing. Replaced by
+  `removeRow()` (`todos.js:194`), which also restores the caret to the previous line.
+- ~~**Duplicate DOM ids**~~ — *fixed in P0-3.* `getRemoveBtn()`/`getSubTaskBtn()` set
+  `id="image"` on their `<img>`, and `getNoteElement()` gave the inner text div the
+  *same* id as its row — so `document.getElementById(rowId)` was returning the right
+  element only by document order. Buttons now use `.btn-remove`/`.btn-subtask` classes
+  and the text div has no id.
+- ~~**Positional `childNodes[2]`**~~ — *fixed in P0-3.* `save_notes()` read note text as
+  `childNodes[i].childNodes[2].innerText`; it now uses `row.querySelector('.note')`.
 - **Last-write-wins across tabs** — two open new tabs each hold the whole list in the
   DOM. A blur in one overwrites everything the other did. There is no
-  `chrome.storage.onChanged` listener.
-- **Silent save failure** — `chrome.runtime.lastError` is checked and logged to a
-  console nobody has open. When the sync quota is exceeded the note is simply gone.
-- **`notes` is an implicit global** — `todos.js:50` assigns `notes = []` with no
-  declaration.
-- **Depth cap of 3** — enforced in `createSubTask()` (`todos.js:275`, returns early when
-  `idx == 3`) and by the CSS only defining `.note1`–`.note3`.
+  `chrome.storage.onChanged` listener. **Still live — fixed by F1-4.**
+- **Depth cap of 3** — enforced in `createSubTask()` (`todos.js:350`, returns early when
+  `idx == 3`) and by the CSS only defining `.note1`–`.note3`. **Still live — lifted by
+  F1-6.**
+
+Save failures are no longer silent (P0-5) and the file is now `'use strict'` with no
+implicit globals (P0-4), but note that P0-5 only makes quota failure *visible* — the
+8 KB cap itself is still there until F1 lands.
 
 ### 2.3 How to run and test
 
@@ -134,44 +137,38 @@ Copy that somewhere. Several tasks here rewrite storage in place.
 
 ---
 
-## 3. Phase 0 — Stabilise (do this first)
+## 3. Phase 0 — Stabilise ✅ done
 
-Small, unglamorous, and it unblocks confident work on everything else. One commit.
+Small, unglamorous, and it unblocks confident work on everything else. All five landed
+together; what each one actually did:
 
-### P0-1 · Replace `e.path` with `composedPath()`
-**Files:** `todos.js:269`, `todos.js:415`
-Swap `e.path[2]` for `e.composedPath()[2]`. Then harden both handlers to not depend on
-a fixed ancestor index — `e.target.closest('.note1, .note2, .note3')` is what both
-actually want.
-**Done when:** the ✕ button deletes a note and the subtask button indents one, in
-current Chrome, at all three levels.
+- **P0-1 · `e.path` → `closest()`.** Added `rowOf(e)` (`todos.js:41`) and routed
+  `createSubTask` and `removeNote` through it. The old `if (div_id !== 'data')` guard in
+  `removeNote` is gone — `closest()` is scoped to row classes, so a stray click returns
+  `null` instead of walking up to the container.
+- **P0-2 · backspace-delete.** Deleted the `removedivbyid` stub; added `removeRow()`
+  (`todos.js:194`) and `placeCaretAtEnd()`. Backspace on an empty top-level line removes
+  it and puts the caret at the end of the previous line. Nested empty lines still outdent
+  one level first and are only deleted once they reach the top level. Structural removal
+  sets a `suppressBlur` flag so the blur handler doesn't reload the list and throw away
+  the caret.
+- **P0-3 · duplicate ids and positional access.** Buttons carry `.btn-remove` /
+  `.btn-subtask` (styles moved from inline attributes into `css/style.css`);
+  `getNoteElement()` no longer takes or sets an id; `save_notes()` reads
+  `row.querySelector('.note')` off `data.children`.
+- **P0-4 · `'use strict'`.** Every implicit global declared — `notes`, `id`, `div_id`,
+  `parent_id`, `cls`, `value`, `currElement`, `nextSiblingId`, `nextIdx`, `newIdx`, and
+  both `i` loop counters in `save_notes`.
+- **P0-5 · visible save failures.** `#status` bottom-right on the new tab page cycles
+  saving → saved (auto-clears) → **Not saved — \<reason\>** (stays up, since a failed save
+  means the text is gone). In the service worker, which has no UI, a failed capture puts
+  a red `!` on the toolbar badge and a success puts a short-lived green `+`.
 
-### P0-2 · Make backspace-delete work
-**Files:** `todos.js:~408` (`removedivbyid`), `todos.js:216` (`keydownEvent`)
-Implement the stub, or delete it and have `keydownEvent` reuse the same path as
-`removeNote`. Backspace on an empty top-level line should remove the line and move the
-caret to the end of the previous line.
-**Done when:** holding backspace through an empty list removes lines one at a time and
-never leaves an orphan.
-
-### P0-3 · Fix duplicate ids and positional `childNodes` access
-**Files:** `todos.js:105–140` (`getRemoveBtn`, `getSubTaskBtn`, `getNoteElement`),
-`todos.js:340` (`save_notes`)
-Drop `id="image"`; give the buttons classes (`.btn-remove`, `.btn-subtask`). Change
-`save_notes` to read `el.querySelector('.note').innerText` instead of `childNodes[2]`.
-**Done when:** `document.querySelectorAll('#image').length === 0` and notes still save.
-
-### P0-4 · Declare `notes`, add `'use strict'`
-**Files:** `todos.js:50`, top of `todos.js`
-**Done when:** no implicit globals; the page loads with no console errors.
-
-### P0-5 · Surface save failures
-**Files:** `todos.js:399`, `background.js:4`, `background.js:46`
-Every `lastError` branch currently only `console.error`s. Add a visible, non-modal
-indicator on the page — a small dot or text in a corner: saved / saving / **failed**.
-This is a stopgap that Phase 1 makes permanent; do it now because without it you cannot
-tell whether the quota bugs you're about to fix are actually fixed.
-**Done when:** filling storage past quota shows a visible failure state, not a silent one.
+**Verified** with a jsdom harness driving the real handlers against a stubbed
+`chrome.storage.sync` — render, subtask, remove, both backspace paths, and an injected
+quota failure. It is not in the repo (it would add npm to a repo that has none); the
+`chrome` stub it needs is about 30 lines and worth rebuilding if a change here gets
+hairy. **Not yet exercised by loading unpacked in a real Chrome** — see §2.3.
 
 ---
 
@@ -353,7 +350,7 @@ arbitrary depth, with no id parsing anywhere in `todos.js`.
 ## 5. Phase 2 — Source-linked captures (F2)
 
 The single highest-value feature, because it's the only one unique to this extension
-and it is currently half-built. `background.js:23` already has `tab.url` and `tab.title`
+and it is currently half-built. `background.js:38` already has `tab.url` and `tab.title`
 in scope and throws them away.
 
 A highlight without a backlink is a clipboard. With one, it's a research tool — which is
@@ -373,7 +370,7 @@ source: {
 }
 ```
 Keep the existing graceful degradation: on `chrome://`, the Web Store and PDF viewers the
-`executeScript` call throws and is caught (`background.js:26`). In that case, save nothing
+`executeScript` call throws and is caught (`background.js:41`). In that case, save nothing
 rather than an empty note — the current code pushes `''` and relies on a `filter` to drop
 it.
 **Done when:** a highlight saved from any normal page carries a resolvable url and title.
@@ -547,13 +544,13 @@ Recording these so they don't get relitigated:
 ## 10. Suggested order
 
 ```
-P0  ──►  F1  ──┬──►  F2  ──►  F5
-               ├──►  F3
-               └──►  F4
+P0 ✅ ──►  F1  ──┬──►  F2  ──►  F5
+                 ├──►  F3
+                 └──►  F4
 ```
 
-Phase 0 first, because you cannot trust test results until the delete and subtask
-buttons are known-good. Phase 1 second, because F2–F5 each need per-note storage,
+Phase 0 came first because you cannot trust test results until the delete and subtask
+buttons are known-good. **F1 is next.** Phase 1 before the rest, because F2–F5 each need per-note storage,
 stable ids and metadata fields — building any of them on the nested-string-array model
 means building them twice.
 
@@ -570,7 +567,7 @@ Wanted, but not in the top five. Listed so they aren't lost.
 - Drag-to-reorder (see Non-goals; blocked on F1-6)
 - Daily-notes mode — an auto-dated notebook per day
 - Themes and a configurable background (currently hardcoded to `images/black.jpg` at
-  `todos.js:26`)
+  `todos.js:35`)
 - Keyboard-only tree navigation (Tab/Shift-Tab to indent, Alt+↑/↓ to move)
 - Reminders / due dates — needs the `alarms` permission and a notification story
 - Undo (`Cmd+Z`) across structural operations, which the current model cannot support

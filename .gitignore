@@ -1,0 +1,9 @@
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# node (only ever used for local test harnesses; the extension itself has no deps)
+node_modules/
