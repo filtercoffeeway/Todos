@@ -49,6 +49,9 @@ window.onload = function() {
         document.getElementById('data').innerHTML = '';
 
         chrome.storage.sync.get('todos_notes', function(result) {
+            if (chrome.runtime.lastError) {
+                console.error('Todos: failed to load notes', chrome.runtime.lastError);
+            }
             notes = result.todos_notes;
             if (!notes) {
                 notes = [''];
@@ -395,6 +398,10 @@ window.onload = function() {
         }
         chrome.storage.sync.set({
             todos_notes: output,
+        }, function() {
+            if (chrome.runtime.lastError) {
+                console.error('Todos: failed to save notes', chrome.runtime.lastError);
+            }
         });
     }
 
