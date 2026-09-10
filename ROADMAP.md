@@ -16,7 +16,8 @@ your new tab page — plus three differentiators Jot didn't have:
 
 1. **Highlight text on any webpage and save it to your notes with one shortcut.**
 2. **Full-window canvas**, not a cramped popup.
-3. **Tree structure** — tasks with subtasks, up to three levels.
+3. **Tree structure** — tasks with subtasks, up to three levels (the cap was lifted to
+   six in F1-6; see §4.2).
 
 Everything in this roadmap must preserve that core. The unit of interaction stays
 "open a new tab, see your notes, type." No login, no server, no account. Features that
@@ -30,17 +31,25 @@ a size limit and currently has a smaller one than the tool it replaced.** See F1
 
 ## 2. Current architecture
 
-Five files matter.
+> **As of F1-1/F1-2/F1-6 (done — see §4.2), this section describes the pre-F1 state.**
+> The data model is now the one in §4.1, owned by `js/store.js`; `todos.js` and
+> `background.js` render/mutate through `Store.*` and never touch `chrome.storage`
+> directly. §2.1 below is kept as-is because the migration in F1-2 depends on exactly
+> the parsing rule it documents. F1-3/F1-4/F1-5 (sync mirror, live cross-tab updates,
+> a real save indicator) have not landed yet.
+
+Six files matter.
 
 | File | Role |
 |---|---|
 | `manifest.json` | MV3 manifest. Permissions: `storage`, `activeTab`, `scripting`. Overrides `newtab` → `todos.html`. Binds `_execute_action` to `Cmd+E` / `Ctrl+Q`. |
-| `background.js` | Service worker. 52 lines. Two listeners: `onInstalled` (writes a welcome note), `action.onClicked` (reads the tab's selection via `chrome.scripting.executeScript` and appends it). |
+| `js/store.js` | Storage module (§4.1/§4.2 F1-1). Owns every `chrome.storage` call — the v1→v2 migration, and the promise-based `Store.*` API everything else renders/mutates through. Loaded before `background.js` (`importScripts`) and `todos.js` (`<script>` tag). |
+| `background.js` | Service worker. Two listeners: `onInstalled` (writes a welcome note via `Store.createNote`), `action.onClicked` (reads the tab's selection via `chrome.scripting.executeScript` and saves it via `Store.createNote`). |
 | `todos.html` | The new tab page. A clock, a logo, and one `<div class="input" id="data">` that holds every note. |
-| `todos.js` | 510 lines, everything else. Renders notes into DOM, handles Enter/Backspace/blur, serialises back to storage. All inside one `window.onload` closure with no exports. |
-| `css/style.css` | Indentation per nesting level is hardcoded as `.note1` (70px), `.note2` (160px), `.note3` (250px). |
+| `todos.js` | Renders `Store.getTree()` into DOM, handles Enter/Backspace/blur/subtask by calling `Store.*` mutators. All inside one `window.onload` closure with no exports. |
+| `css/style.css` | Indentation is depth-driven: one `.note` rule reading a `--depth` custom property set per row, not per-level classes. |
 
-### 2.1 The current data model
+### 2.1 The pre-F1 data model (historical; the migration in F1-2 depends on this)
 
 One `chrome.storage.sync` key, `todos_notes`, holding **nested arrays of plain strings**:
 
@@ -58,46 +67,57 @@ A string is a note. A nested array is the children of the note immediately befor
 There are no ids, no timestamps, no completion state, no source URL — a note is
 *only its text*.
 
-Serialisation round-trip:
+Serialisation round-trip (pre-F1-6 `todos.js`, since replaced — kept because F1-2's
+migration walks the legacy value with exactly this same rule):
 
-- **Read** — `loadNotes()` (`todos.js:81`) → `createNotes()` (`todos.js:100`) walks the
-  array recursively, assigning DOM ids from a monotonic `noteId` counter. Top-level ids
-  are `"0"`, `"1"`; children are `"<parentId>-<noteId>"`, e.g. `"2-7"`, `"2-7-11"`. The
-  **number of dash-separated segments encodes the depth**, and the CSS class
-  (`note1`/`note2`/`note3`) encodes it a second time.
-- **Write** — `save_notes()` (`todos.js:399`) walks `#data`'s children in document order,
-  builds an intermediate array of `"note2-some text"` strings, then re-nests them into
-  arrays by scanning for level transitions.
+- **Read** — `loadNotes()` → `createNotes()` walked the array recursively, assigning
+  DOM ids from a monotonic `noteId` counter. Top-level ids were `"0"`, `"1"`; children
+  were `"<parentId>-<noteId>"`, e.g. `"2-7"`, `"2-7-11"`. The **number of
+  dash-separated segments encoded the depth**, and the CSS class
+  (`note1`/`note2`/`note3`) encoded it a second time.
+- **Write** — `save_notes()` walked `#data`'s children in document order, built an
+  intermediate array of `"note2-some text"` strings, then re-nested them into arrays
+  by scanning for level transitions.
 
-**This model is the bottleneck for every feature below.** Phase 1 replaces it. Do not
-build F2–F5 on top of it.
+**This model was the bottleneck for every feature below.** Phase 1 replaces it (done —
+§4.2). Do not build F2–F5 on the v1 model described here.
 
-### 2.2 Known landmines in the existing code
+### 2.2 Known landmines in the pre-F1 code
 
-**Phase 0 is done** (see §3) — the first four below are fixed, and are kept here as a
-record of what the code used to do, because the shape of each explains something about
-the design. The last two are still live and are resolved by Phase 1.
+**Phase 0 and F1-6 are done** (see §3, §4.2) — all but one of these are fixed, kept here
+as a record of what the code used to do, because the shape of each explains something
+about the design. `todos.js` was rewritten in F1-6, so none of the line/function
+references below exist in the current file; they describe the code as it stood
+pre-F1-6.
 
-- ~~**`e.path` is non-standard and deprecated**~~ — *fixed in P0-1.* `createSubTask` and
-  `removeNote` used `e.path[2].id`; `Event.path` is a Chrome-only alias for
-  `Event.composedPath()`. Both now go through `rowOf(e)` (`todos.js:41`), which is
-  `e.target.closest('.note1, .note2, .note3')`.
-- ~~**`removedivbyid()` is an empty stub**~~ — *fixed in P0-2.* Its only line was
-  commented out, so backspace on an empty top-level line did nothing. Replaced by
-  `removeRow()` (`todos.js:194`), which also restores the caret to the previous line.
+- ~~**`e.path` is non-standard and deprecated**~~ — *fixed in P0-1, superseded by F1-6.*
+  `createSubTask` and `removeNote` used `e.path[2].id`; `Event.path` is a Chrome-only
+  alias for `Event.composedPath()`. P0-1 routed both through a `rowOf(e)` helper using
+  `closest('.note1, .note2, .note3')`; F1-6 kept the `rowOf(e)` pattern but simplified
+  the selector to `closest('.note')` now that every row shares one class.
+- ~~**`removedivbyid()` is an empty stub**~~ — *fixed in P0-2, superseded by F1-6.* Its
+  only line was commented out, so backspace on an empty top-level line did nothing.
+  P0-2 added `removeRow()`, which restored the caret to the previous line; F1-6
+  replaced it with `deleteRowAndSubtree()`, same caret behaviour, now backed by
+  `Store.deleteNote`.
 - ~~**Duplicate DOM ids**~~ — *fixed in P0-3.* `getRemoveBtn()`/`getSubTaskBtn()` set
   `id="image"` on their `<img>`, and `getNoteElement()` gave the inner text div the
   *same* id as its row — so `document.getElementById(rowId)` was returning the right
-  element only by document order. Buttons now use `.btn-remove`/`.btn-subtask` classes
-  and the text div has no id.
-- ~~**Positional `childNodes[2]`**~~ — *fixed in P0-3.* `save_notes()` read note text as
-  `childNodes[i].childNodes[2].innerText`; it now uses `row.querySelector('.note')`.
+  element only by document order. Buttons use `.btn-remove`/`.btn-subtask` classes and
+  the text div has no id (now `.note-text`, since F1-6 gave the row itself the `.note`
+  class).
+- ~~**Positional `childNodes[2]`**~~ — *fixed in P0-3, moot after F1-6.* `save_notes()`
+  read note text as `childNodes[i].childNodes[2].innerText`; P0-3 changed that to
+  `row.querySelector('.note')`. F1-6 removed `save_notes()` (and the whole
+  document-wide re-serialisation it did) entirely — text is read per-row, on demand,
+  from `.note-text`.
 - **Last-write-wins across tabs** — two open new tabs each hold the whole list in the
   DOM. A blur in one overwrites everything the other did. There is no
   `chrome.storage.onChanged` listener. **Still live — fixed by F1-4.**
-- **Depth cap of 3** — enforced in `createSubTask()` (`todos.js:350`, returns early when
-  `idx == 3`) and by the CSS only defining `.note1`–`.note3`. **Still live — lifted by
-  F1-6.**
+- ~~**Depth cap of 3**~~ — *fixed in F1-6.* Each note is its own storage item with a
+  real `parentId`/`children` chain now, not a dash-encoded id; `Store.moveNote`
+  enforces `MAX_DEPTH = 6` in the one place notes change parent, and the CSS is a
+  single depth-driven `.note` rule instead of `.note1`–`.note3`.
 
 Save failures are no longer silent (P0-5) and the file is now `'use strict'` with no
 implicit globals (P0-4), but note that P0-5 only makes quota failure *visible* — the
@@ -358,7 +378,7 @@ Replace the P0-5 stopgap with a proper status affordance: idle / saving / synced
 **local-only** / **failed**, plus a capacity readout ("312 notes · 41 KB synced").
 **Done when:** every failure mode from F1-3 has a distinct visible state.
 
-#### F1-6 · Rewrite the render layer against the new model
+#### F1-6 · Rewrite the render layer against the new model ✅ done
 **Files:** `todos.js`, `css/style.css`
 `createNotes` / `save_notes` / `keypressEvent` / `keydownEvent` / `createSubTask` all
 currently manipulate the dash-id scheme. Rewrite them to render from `Store.getTree()`
@@ -375,6 +395,49 @@ enforce it in one place in `Store.moveNote`, not in the DOM code.
 **Done when:** all existing editing behaviour (Enter to add a sibling, Enter on an empty
 child to outdent, Backspace to remove, the subtask button) works identically, at
 arbitrary depth, with no id parsing anywhere in `todos.js`.
+
+Landed. Rows are flat in the DOM (one preorder walk of the tree, same as before) but
+carry `data-parent-id`/`data-depth` set at render time instead of a dash-encoded id;
+`--depth` on each row drives the new single `.note` CSS rule. Fast-path edits (Enter
+for a sibling, the subtask button for a child) patch the DOM directly; structural
+moves that can shift more than one row (outdent, delete-with-subtree) call
+`Store.moveNote`/`deleteNote` and then do a full `render()` from `Store.getTree()`,
+restoring focus/caret afterwards. `background.js`'s capture path moved to
+`Store.createNote` in this same commit, since it and `todos.js` have to agree on
+which model is live.
+
+Three small, deliberate behaviour changes from the pre-F1 version, worth knowing
+about rather than discovering by surprise:
+- **Blur no longer drops an emptied line.** The old code reloaded the whole list on
+  blur-when-empty, which visually removed a line the user had cleared. Every note is
+  its own storage item now, so there's no reason to force that — blur just persists
+  whatever text is there, including empty. (An empty line is still removed the moment
+  Backspace is pressed on it, same as before.)
+- **A blank/never-typed-into line is a real, persisted note**, not a DOM-only
+  placeholder. `render()` calls `Store.createNote` when a notebook is empty rather
+  than inserting an unsaved default row.
+- **Backspacing an empty line that (unusually) has children deletes the subtree with
+  it**, per the F1 model's "no orphans" invariant (§4.1) — the old flat-array model
+  had no real notion of orphaned children to worry about.
+
+Also fixed in passing, not a deliberate design choice: pressing Enter (or clicking
+the subtask button) immediately after typing, without an intervening blur, used to
+work only because moving focus to the new line happened to fire a blur that
+re-serialised the *entire* DOM. Each note being its own item removes that accidental
+save path, so `insertSiblingAfter`/`insertChild` now explicitly persist the row
+being left before creating the new one.
+
+Verified with a JSDOM harness (`runScripts: 'dangerously'`, `resources: 'usable'`)
+loading the real `todos.html`, with the same chrome.storage stub and innerText
+polyfill as the F1-1/F1-2 harness, dispatching real keypress/keydown/click/blur
+events at the actual handlers: fresh-install render, Enter-adds-sibling (including
+that the just-typed text survives with no blur in between), the subtask button
+nesting six levels deep (past the old hardcoded cap of 3) with the new `MAX_DEPTH`
+silently refusing a 7th, Enter- and Backspace-outdent on a nested empty line,
+Backspace-delete at the top level with caret restoration, a real v1 legacy value
+migrating and rendering correctly through the full page, and a static grep confirming
+no id-splitting anywhere in `todos.js`. Harness lives in the scratchpad (plus a
+scratchpad-local `npm install jsdom`, not committed — no npm in the repo, by design).
 
 ---
 

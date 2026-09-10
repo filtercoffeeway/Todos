@@ -1,3 +1,7 @@
+// Store (js/store.js) owns chrome.storage entirely -- see ROADMAP.md §4.
+// This worker never touches chrome.storage directly.
+importScripts('js/store.js');
+
 // The service worker has no UI, so a failed capture is reported on the toolbar
 // badge -- otherwise the only trace is a console nobody has open. The success
 // badge clears itself; the failure badge is left up until the next capture,
@@ -15,12 +19,16 @@ function showCaptureStatus(ok) {
 
 chrome.runtime.onInstalled.addListener(function (details) {
 	if (details.reason == 'install') {
-		let welcome_note = ['Thank you for choosing Todos notes !!! '];
-		chrome.storage.sync.set({ todos_notes: welcome_note }, function () {
-			if (chrome.runtime.lastError) {
-				console.error('Todos: failed to set welcome note', chrome.runtime.lastError);
-			}
-		});
+		Store.init()
+			.then(function () {
+				return Store.createNote({
+					notebookId: Store.DEFAULT_NOTEBOOK_ID,
+					text: 'Thank you for choosing Todos notes !!! ',
+				});
+			})
+			.catch(function (err) {
+				console.error('Todos: failed to set welcome note', err);
+			});
 	}
 });
 
@@ -44,28 +52,20 @@ chrome.action.onClicked.addListener(async function (tab) {
 		console.warn('Todos: could not read selection on this page', err);
 	}
 
-	chrome.storage.sync.get('todos_notes', function (result) {
-		if (chrome.runtime.lastError) {
-			console.error('Todos: failed to read notes', chrome.runtime.lastError);
-			showCaptureStatus(false);
-			return;
+	try {
+		await Store.init();
+		if (text_selected) {
+			await Store.createNote({ notebookId: Store.DEFAULT_NOTEBOOK_ID, text: text_selected });
 		}
-		let notes = result.todos_notes;
-		if (!notes) {
-			notes = [text_selected];
-		} else {
-			notes.push(text_selected);
-		}
-		notes = notes.filter(function (e) {
-			return e;
-		});
-		chrome.storage.sync.set({ todos_notes: notes }, function () {
-			if (chrome.runtime.lastError) {
-				console.error('Todos: failed to save notes', chrome.runtime.lastError);
-				showCaptureStatus(false);
-				return;
-			}
-			showCaptureStatus(true);
-		});
-	});
+		// A click that captured nothing (no selection, or a page
+		// executeScript can't reach) still shows success rather than
+		// failure here -- matches the pre-F1 behaviour, where an empty
+		// selection was silently filtered out of the saved array rather
+		// than treated as an error. F2-1 revisits whether that's the
+		// right signal once captures carry source metadata.
+		showCaptureStatus(true);
+	} catch (err) {
+		console.error('Todos: failed to save captured note', err);
+		showCaptureStatus(false);
+	}
 });

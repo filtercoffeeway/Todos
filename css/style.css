@@ -20,32 +20,25 @@ html {
 	margin: 3.5rem 0 0 0;
 }
 
+/* One rule for every row, at any depth -- replaces the old hardcoded
+   .note1/.note2/.note3 (which also capped nesting at 3 levels, since deeper
+   rows had no rule to fall back to). --depth is set inline per row by
+   todos.js from the note's actual position in the tree, not guessed from
+   its id. 70px/90px reproduce the old note1/note2/note3 spacing exactly at
+   depth 0/1/2; deeper levels are new, lifted by F1-6. */
 .input .note {
-	margin-left: 40px;
+	margin-left: calc(70px + var(--depth, 0) * 90px);
+	margin-top: 10px;
 	outline: none;
 	spellcheck: false;
 	autocorrect: "off";
 }
 
-.input .note1 {
-	margin-left: 70px;
+.input .note[data-depth="0"] {
 	margin-top: 50px;
-	outline: none;
-	spellcheck: false;
-	autocorrect: "off";
 }
 
-.input .note2 {
-	margin-left: 160px;
-	margin-top: 10px;
-	outline: none;
-	spellcheck: false;
-	autocorrect: "off";
-}
-
-.input .note3 {
-	margin-left: 250px;
-	margin-top: 10px;
+.input .note-text {
 	outline: none;
 	spellcheck: false;
 	autocorrect: "off";
