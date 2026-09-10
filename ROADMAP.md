@@ -246,7 +246,7 @@ resolution possible.
 
 ### 4.2 Tasks
 
-#### F1-1 · Build the storage module
+#### F1-1 · Build the storage module ✅ done
 **New file:** `js/store.js` (loaded before `todos.js`; keep it plain classic script — the
 CSP is `script-src 'self'` and there is no bundler, so either add a second `<script>` tag
 or convert both to `type="module"`, which MV3 permits for extension pages).
@@ -273,7 +273,24 @@ should not touch `chrome.storage` directly after this task.
 **Done when:** the module is exercised end-to-end from the DevTools console, with
 `validateTree()` clean after a few hundred random create/move/delete operations.
 
-#### F1-2 · Write the v1 → v2 migration
+Landed as written above, with one addition not in the original list:
+`Store.validateTree()` is exposed on the public object (not just an internal dev
+helper) since the verification harness and future console debugging both need it.
+`background.js`/`todos.js` do not yet route through this module — that's F1-6 (and,
+for `background.js`'s capture path, done alongside it, since both must agree on
+which model is live at the same time). Until then `js/store.js` is loaded on the
+page (`todos.html`) but unused, and the legacy `chrome.storage.sync` code path in
+`todos.js` is still what's actually running.
+
+Verified standalone with a Node harness (no jsdom needed — this module never
+touches the DOM): a ~90-line `chrome.storage` stub (local + sync, get/set/remove,
+a `lastError` toggle, a bare `onChanged`), exercising fresh-install, migration,
+idempotency, the depth cap, cycle rejection, a visible-write-failure check, and
+400 random create/move/delete operations with `validateTree()` clean after every
+one. Kept in the scratchpad, not the repo, per the no-npm rule — rebuild it from
+this section if `store.js` changes materially.
+
+#### F1-2 · Write the v1 → v2 migration ✅ done
 **Files:** `js/store.js`
 Read the legacy `todos_notes` nested-array value. Walk it with the same
 "array-follows-its-parent" rule `createNotes()` uses (`todos.js:61`). Emit v2 notes with
@@ -286,6 +303,20 @@ generated ids, `createdAt = Date.now()`, `done: false`, `source: null`.
 
 **Done when:** a store seeded with the v1 example in §2.1 migrates to a tree that renders
 identically, and running the migration twice changes nothing.
+
+Landed as specified: backup-then-migrate, with the backup write and the migration
+write guarded *independently* (backup on "does `todos_notes_backup_v1` exist?",
+migration on "is `schema_version` already 2?") specifically so a store that reached
+v2 without ever getting a backup — e.g. a process torn down between the two writes
+under a naive single-guard implementation — still gets one on the next call instead
+of being stuck backup-less forever. The v2 write itself is a single
+`chrome.storage.local.set()` covering `schema_version` + every note/notebook key
+together, which is what makes it safe to interrupt: either that call lands whole or
+`schema_version` never changes and the next `Store.init()` rebuilds and retries from
+the untouched legacy data. Verified by the same harness as F1-1: the §2.1 example
+migrates to the expected tree, and re-running against the resulting storage (a fresh
+module load, same persisted stub state — simulating a service-worker/new-tab reload)
+changes neither area byte-for-byte.
 
 #### F1-3 · Sync mirror with per-note last-write-wins
 **Files:** `js/store.js`

@@ -18,4 +18,6 @@ Notes are still stored under one `chrome.storage.sync` key, which caps at 8KB/it
 
 ## Next
 
-Not yet re-tested by loading unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked). Feature additions for the relaunch haven't been scoped yet.
+Not yet re-tested by loading unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked).
+
+See `ROADMAP.md` for the post-MV3 relaunch plan (currently: Phase 1, the storage/data-model rewrite) — read it before starting any new task here.
