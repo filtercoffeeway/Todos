@@ -83,6 +83,29 @@ window.onload = function() {
             err.message.indexOf('Maximum nesting depth') !== -1);
     }
 
+    // Counts local, in-flight Store mutations this tab started itself.
+    // Store.onChange (F1-4, below) fires for every storage change --
+    // including this tab's own, since chrome.storage.onChanged fires in the
+    // same context that made the change too -- and it fires *before* the
+    // mutating call's own .then() runs (the storage callback resolves the
+    // promise, but onChanged is dispatched synchronously right alongside
+    // it, ahead of any queued microtask continuation). So rather than race
+    // that ordering, every locally-initiated mutation increments this while
+    // it's in flight; the change handler skips reacting whenever it's
+    // nonzero, since the code that's already running owns updating the DOM.
+    var localMutationDepth = 0;
+
+    function withLocalMutation(promise) {
+        localMutationDepth++;
+        return promise.then(function(result) {
+            localMutationDepth--;
+            return result;
+        }, function(err) {
+            localMutationDepth--;
+            throw err;
+        });
+    }
+
     function set_date() {
         var date = new Date();
         var hours = date.getHours();
@@ -97,11 +120,57 @@ window.onload = function() {
     set_date();
     setInterval(set_date, 1000);
 
-    Store.init().then(function() {
+    withLocalMutation(Store.init().then(function() {
         return render();
-    }).catch(function(err) {
+    })).catch(function(err) {
         console.error('Todos: failed to initialize store', err);
         setStatus('failed', 'Could not load notes');
+    });
+
+    // F1-4: live updates from elsewhere -- another open new tab, a
+    // highlight captured via the toolbar button, or a note pulled in from
+    // another device's sync mirror. Skipped whenever localMutationDepth is
+    // nonzero, since that means this tab's own code (above) is already
+    // mid-update and will reflect the change itself; see the comment on
+    // localMutationDepth for why that guard is safe against the ordering
+    // between a local write and its own onChanged.
+    //
+    // Before reloading, this flushes whatever's currently being typed here
+    // -- the actual fix for the old "two tabs clobber each other" bug: a
+    // change from elsewhere no longer forces a reload that silently drops
+    // an unsaved keystroke in this tab.
+    Store.onChange(function(evt) {
+        if (localMutationDepth > 0) {
+            return;
+        }
+        if (!evt || (evt.changedNoteIds.length === 0 && evt.removedNoteIds.length === 0)) {
+            return;
+        }
+
+        var active = document.activeElement;
+        var activeRow = (active && active.classList && active.classList.contains('note-text'))
+            ? rowOf({ target: active })
+            : null;
+        var activeId = activeRow ? activeRow.id : null;
+        var flush = activeRow ? Store.updateNote(activeRow.id, { text: noteTextOf(activeRow) }) : Promise.resolve();
+
+        withLocalMutation(
+            flush.catch(function() {}).then(function() {
+                return render();
+            }).then(function() {
+                if (!activeId) {
+                    return;
+                }
+                var row = document.getElementById(activeId);
+                if (row) {
+                    var textEl = row.querySelector('.note-text');
+                    textEl.focus();
+                    placeCaretAtEnd(textEl);
+                }
+            })
+        ).catch(function(err) {
+            console.error('Todos: failed to apply a change from elsewhere', err);
+        });
     });
 
     // Rebuilds #data from Store.getTree(). Used for the initial load and
@@ -231,24 +300,26 @@ window.onload = function() {
         var depth = Number(currentRow.dataset.depth);
         var currentText = noteTextOf(currentRow);
 
-        return withStatus(
-            Store.updateNote(currentRow.id, { text: currentText }).then(function() {
-                return Store.createNote({
-                    notebookId: NOTEBOOK_ID,
-                    parentId: parentId,
-                    afterId: currentRow.id,
-                    text: ''
-                });
+        return withLocalMutation(
+            withStatus(
+                Store.updateNote(currentRow.id, { text: currentText }).then(function() {
+                    return Store.createNote({
+                        notebookId: NOTEBOOK_ID,
+                        parentId: parentId,
+                        afterId: currentRow.id,
+                        text: ''
+                    });
+                })
+            ).then(function(note) {
+                var row = createRowElement(note, depth);
+                var anchor = lastRowOfSubtree(currentRow);
+                suppressBlur = true;
+                data.insertBefore(row, anchor.nextSibling);
+                suppressBlur = false;
+                row.querySelector('.note-text').focus();
+                return row;
             })
-        ).then(function(note) {
-            var row = createRowElement(note, depth);
-            var anchor = lastRowOfSubtree(currentRow);
-            suppressBlur = true;
-            data.insertBefore(row, anchor.nextSibling);
-            suppressBlur = false;
-            row.querySelector('.note-text').focus();
-            return row;
-        });
+        );
     }
 
     // Inserts a new empty child as the last child of `currentRow`. A depth-
@@ -259,33 +330,35 @@ window.onload = function() {
         var currentText = noteTextOf(currentRow);
 
         setStatus('saving', 'Saving…');
-        return Store.updateNote(currentRow.id, { text: currentText }).then(function() {
-            return Store.createNote({
-                notebookId: NOTEBOOK_ID,
-                parentId: currentRow.id,
-                text: ''
-            });
-        }).then(function(note) {
-            setStatus('saved', 'Saved');
-            var row = createRowElement(note, depth);
-            var anchor = lastRowOfSubtree(currentRow);
-            suppressBlur = true;
-            data.insertBefore(row, anchor.nextSibling);
-            suppressBlur = false;
-            row.querySelector('.note-text').focus();
-            return row;
-        }, function(err) {
-            if (isDepthCapError(err)) {
-                setStatus('saved', '');
-                return null;
-            }
-            console.error('Todos: failed to create subtask', err);
-            setStatus(
-                'failed',
-                'Not saved — '.concat(err && err.message ? err.message : 'storage error'),
-            );
-            throw err;
-        });
+        return withLocalMutation(
+            Store.updateNote(currentRow.id, { text: currentText }).then(function() {
+                return Store.createNote({
+                    notebookId: NOTEBOOK_ID,
+                    parentId: currentRow.id,
+                    text: ''
+                });
+            }).then(function(note) {
+                setStatus('saved', 'Saved');
+                var row = createRowElement(note, depth);
+                var anchor = lastRowOfSubtree(currentRow);
+                suppressBlur = true;
+                data.insertBefore(row, anchor.nextSibling);
+                suppressBlur = false;
+                row.querySelector('.note-text').focus();
+                return row;
+            }, function(err) {
+                if (isDepthCapError(err)) {
+                    setStatus('saved', '');
+                    return null;
+                }
+                console.error('Todos: failed to create subtask', err);
+                setStatus(
+                    'failed',
+                    'Not saved — '.concat(err && err.message ? err.message : 'storage error'),
+                );
+                throw err;
+            })
+        );
     }
 
     // Moves `row` up one level: reparents it (and, structurally, its own
@@ -301,17 +374,19 @@ window.onload = function() {
         var grandParentId = parentRow ? (parentRow.dataset.parentId || null) : null;
         var rowId = row.id;
 
-        return withStatus(Store.moveNote(rowId, { parentId: grandParentId, afterId: parentId }))
-            .then(function() { return render(); })
-            .then(function() {
-                var newRow = document.getElementById(rowId);
-                if (newRow) {
-                    var textEl = newRow.querySelector('.note-text');
-                    textEl.focus();
-                    placeCaretAtEnd(textEl);
-                }
-                return newRow;
-            });
+        return withLocalMutation(
+            withStatus(Store.moveNote(rowId, { parentId: grandParentId, afterId: parentId }))
+                .then(function() { return render(); })
+                .then(function() {
+                    var newRow = document.getElementById(rowId);
+                    if (newRow) {
+                        var textEl = newRow.querySelector('.note-text');
+                        textEl.focus();
+                        placeCaretAtEnd(textEl);
+                    }
+                    return newRow;
+                })
+        );
     }
 
     // Deletes `row` and its subtree (Store.deleteNote cascades -- see
@@ -322,19 +397,21 @@ window.onload = function() {
         var prevRow = row.previousElementSibling;
         var prevId = prevRow ? prevRow.id : null;
 
-        return withStatus(Store.deleteNote(row.id))
-            .then(function() { return render(); })
-            .then(function() {
-                if (!prevId) {
-                    return;
-                }
-                var prev = document.getElementById(prevId);
-                if (prev) {
-                    var textEl = prev.querySelector('.note-text');
-                    textEl.focus();
-                    placeCaretAtEnd(textEl);
-                }
-            });
+        return withLocalMutation(
+            withStatus(Store.deleteNote(row.id))
+                .then(function() { return render(); })
+                .then(function() {
+                    if (!prevId) {
+                        return;
+                    }
+                    var prev = document.getElementById(prevId);
+                    if (prev) {
+                        var textEl = prev.querySelector('.note-text');
+                        textEl.focus();
+                        placeCaretAtEnd(textEl);
+                    }
+                })
+        );
     }
 
     // when enter key is pressed.
@@ -413,7 +490,7 @@ window.onload = function() {
         if (!row) {
             return;
         }
-        withStatus(Store.updateNote(row.id, { text: e.target.innerText || '' }))
+        withLocalMutation(withStatus(Store.updateNote(row.id, { text: e.target.innerText || '' })))
             .catch(function() {}); // already surfaced via setStatus('failed', ...)
     }
 

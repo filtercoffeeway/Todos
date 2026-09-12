@@ -338,7 +338,7 @@ migrates to the expected tree, and re-running against the resulting storage (a f
 module load, same persisted stub state — simulating a service-worker/new-tab reload)
 changes neither area byte-for-byte.
 
-#### F1-3 · Sync mirror with per-note last-write-wins
+#### F1-3 · Sync mirror with per-note last-write-wins ✅ done
 **Files:** `js/store.js`
 
 `storage.local` is the truth. Mirror into `storage.sync` as **one item per note**, key
@@ -364,13 +364,75 @@ changes neither area byte-for-byte.
 **Done when:** two Chrome profiles signed into the same account converge, and pasting a
 200 KB document into a note does not lose data or throw.
 
-#### F1-4 · Live cross-tab updates
+**Product decisions made explicitly, not re-derived:** eviction priority is "most
+recently updated wins" (straight LRU on `updatedAt`, as sketched above) — asked and
+confirmed rather than assumed. The `MAX_WRITE_OPERATIONS_PER_MINUTE` multi-key question
+was **not verified empirically** — asked, and the choice was to skip live-Chrome
+verification and build the write queue defensively instead, assuming the worse case
+(counts once per key). `SYNC_WRITE_BUDGET_PER_MINUTE = 100` (a margin under the real 120)
+is enforced as a rolling 60-second credit window in `js/store.js`, spent per key across
+both the `set()` and `remove()` calls in a flush. If a future session verifies the real
+behaviour is once-per-call, this budget can grow substantially — it's deliberately
+conservative, not tuned.
+
+Landed as specified, with these scope calls (all worth knowing before building on this):
+- **No tombstones.** A note disappearing from another device's `s:<id>` mirror entry
+  could mean it was deleted there, or just evicted from *that device's* budget — the
+  protocol can't tell the two apart, so **deletions do not propagate across devices**
+  via sync in this pass. (Deleting a note still removes it, and its own mirror slot,
+  wherever the delete happened.) A real fix needs a tombstone/deleted-marker scheme;
+  not designed here.
+- **Sibling order isn't synced.** Only `parentId` mirrors per note (`children`/
+  `rootOrder` don't); tree *membership* converges across devices, exact order within a
+  level may not. F5's notebook work is the more natural place to revisit ordering sync.
+- Eviction is reactive, not a periodic global re-sort: a note only competes for a sync
+  slot when it's created or edited. An old, never-touched local-only note doesn't get
+  reconsidered against a stale synced note just because time passed — only touching it
+  (which gives it a fresh `updatedAt`) puts it back in contention. This matches "most
+  recently updated wins" faithfully for anything actually in use, without a periodic
+  full-collection scan.
+- LWW ties (same `updatedAt` to the millisecond, e.g. two devices' clocks agree exactly)
+  break on a plain string comparison of a per-write `_dev` tag against this device's own
+  id — arbitrary but deterministic, so every device converges on the same winner without
+  needing to coordinate.
+
+Verified with a harness running two independent Store instances in separate `vm`
+contexts (own fake `Date.now`/`setTimeout` each, so the debounce/rate-limit windows
+advance on command instead of in real wall-clock minutes), sharing one plain-object
+`chrome.storage.sync`: debounced push (nothing in sync until the 500ms window elapses),
+an oversized note flagged and never synced, two devices converging on a create, an LWW
+update, and a new child note, a remote note whose parent isn't known locally landing at
+root, eviction keeping the mirror within `SYNC_MAX_ITEMS` by dropping the earliest-touched
+notes first, and a direct assertion that no single 60-second window ever writes more
+keys than `SYNC_WRITE_BUDGET_PER_MINUTE`. Harness in the scratchpad, not the repo.
+
+#### F1-4 · Live cross-tab updates ✅ done
 **Files:** `js/store.js`, `todos.js`
 Add a `chrome.storage.onChanged` listener and re-render affected notes. This kills the
 "two new tabs clobber each other" bug in §2.2, and is also what makes a highlight
 captured from `background.js` appear instantly in an already-open new tab.
 **Done when:** two new tabs are open, editing in one updates the other without a reload,
 and neither loses text.
+
+Landed as `Store.onChange` (already present from F1-6, now also fed by F1-3's remote-sync
+merges) wired into `todos.js`. The actual fix for the clobber bug isn't just "listen and
+re-render" — a bare reload the instant another tab changes anything would trade the old
+bug for a new one, discarding whatever this tab is mid-typing. So the handler, before
+re-rendering: (1) is skipped entirely while `localMutationDepth > 0`, i.e. while *this*
+tab's own code is already in the middle of a Store call it knows how to reflect in the
+DOM itself (every local mutation path increments this synchronously before the call,
+which matters because `chrome.storage.onChanged` fires for the tab that made the change
+too, and fires **before** that tab's own `.then()` continuation runs — ahead of the
+microtask queue, not after it); (2) flushes whatever's live in the currently-focused
+`.note-text` to `Store.updateNote` first, so an in-progress, not-yet-blurred edit is
+captured before the DOM under it is rebuilt; (3) re-renders and restores focus/caret to
+the same note if it's still there.
+
+Verified with two JSDOM windows sharing one `chrome.storage.local`/`sync` pair (same
+harness as F1-6): a save in tab B appears in tab A with no reload the test triggers
+itself, and a full sequence where tab A has unsaved, in-progress text and tab B pushes
+an unrelated change (touching a different note) — tab A's own text survives into Store
+rather than being lost to the resulting re-render.
 
 #### F1-5 · Make the save indicator real
 **Files:** `todos.js`, `css/style.css`
