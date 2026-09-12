@@ -12,10 +12,18 @@ Chrome extension (new-tab note/todo list; highlight text on any page + shortcut 
 - Added manifest `icons` (16/48/128, generated from `images/note.png`).
 - Fixed Mac shortcut binding (`Ctrl+E`→`Command+E`) to match what the README always claimed.
 
-## Known open item (not yet decided)
+## Storage model: rewritten (Phase 1 of the relaunch, done — see ROADMAP.md §4)
 
-Notes are still stored under one `chrome.storage.sync` key, which caps at 8KB/item and 100KB total — a long note list can silently fail to save. Left as-is because switching to `storage.local` would drop the cross-device sync the README advertises. Needs a decision before relying on it heavily.
+The single `chrome.storage.sync` key with its 8KB/100KB caps (the "Known open item" this
+section used to flag) is gone. `js/store.js` now owns storage: `chrome.storage.local`
+(one item per note) is the source of truth, mirrored into `chrome.storage.sync` per-note
+with LRU eviction when the mirror is full. `todos.js`/`background.js` talk to notes only
+through `Store.*`. Details, scope limits (no delete propagation across devices yet, no
+verified answer on how sync write quotas count multi-key batches), and what's still
+open (F1 is done; F2 onward have not been started) are in ROADMAP.md §4.
 
 ## Next
 
-Not yet re-tested by loading unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked). Feature additions for the relaunch haven't been scoped yet.
+Not yet re-tested by loading unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked) — everything above is verified against stubbed `chrome.storage` in scratchpad harnesses, not a real browser.
+
+See `ROADMAP.md` for the post-MV3 relaunch plan — read it before starting any new task here.
