@@ -75,6 +75,7 @@
     var flushing = false;
     var windowStart = 0;
     var windowUsed = 0;
+    var syncErrorListeners = [];
 
     // ---- small helpers ---------------------------------------------------
 
@@ -554,6 +555,9 @@
             // edited or evicted.
             flushing = false;
             armFlushTimer(2000);
+            syncErrorListeners.forEach(function (cb) {
+                try { cb(err); } catch (e) { console.error('Todos: Store.onSyncError listener threw', e); }
+            });
         });
     }
 
@@ -1163,6 +1167,18 @@
         };
     };
 
+    // Fires when a sync mirror write (push or eviction) fails -- e.g. sync
+    // disabled/signed out mid-session. Local storage is unaffected either
+    // way; this is purely so the UI (F1-5) can show something other than
+    // silence when the mirror itself is stuck.
+    Store.onSyncError = function (cb) {
+        syncErrorListeners.push(cb);
+        return function unsubscribe() {
+            var idx = syncErrorListeners.indexOf(cb);
+            if (idx !== -1) { syncErrorListeners.splice(idx, 1); }
+        };
+    };
+
     // Dev-only sanity check on the invariants from ROADMAP.md §4.1. Not
     // used in the hot path; call from the console or a test harness.
     Store.validateTree = function () {
@@ -1237,9 +1253,14 @@
     // "N notes are local-only".
     Store.getSyncStatus = function () {
         return ensureInit().then(function () {
+            var totalNotes = 0;
+            Object.keys(cache).forEach(function (k) {
+                if (k.indexOf('note:') === 0) { totalNotes++; }
+            });
             return {
                 enabled: syncEnabled,
                 deviceId: deviceId,
+                totalNotes: totalNotes,
                 syncedCount: syncedIds ? syncedIds.size : 0,
                 syncedBytes: syncedIds ? currentSyncedBytesTotal() : 0,
                 maxItems: SYNC_MAX_ITEMS,

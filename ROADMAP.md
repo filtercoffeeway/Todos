@@ -31,12 +31,11 @@ a size limit and currently has a smaller one than the tool it replaced.** See F1
 
 ## 2. Current architecture
 
-> **As of F1-1/F1-2/F1-6 (done — see §4.2), this section describes the pre-F1 state.**
+> **Phase 1 is done (see §4.2) — this section describes the pre-F1 state.**
 > The data model is now the one in §4.1, owned by `js/store.js`; `todos.js` and
 > `background.js` render/mutate through `Store.*` and never touch `chrome.storage`
 > directly. §2.1 below is kept as-is because the migration in F1-2 depends on exactly
-> the parsing rule it documents. F1-3/F1-4/F1-5 (sync mirror, live cross-tab updates,
-> a real save indicator) have not landed yet.
+> the parsing rule it documents.
 
 Six files matter.
 
@@ -162,12 +161,12 @@ Copy that somewhere. Several tasks here rewrite storage in place.
 Small, unglamorous, and it unblocks confident work on everything else. All five landed
 together; what each one actually did:
 
-- **P0-1 · `e.path` → `closest()`.** Added `rowOf(e)` (`todos.js:41`) and routed
+- **P0-1 · `e.path` → `closest()`.** Added a `rowOf(e)` helper and routed
   `createSubTask` and `removeNote` through it. The old `if (div_id !== 'data')` guard in
   `removeNote` is gone — `closest()` is scoped to row classes, so a stray click returns
   `null` instead of walking up to the container.
 - **P0-2 · backspace-delete.** Deleted the `removedivbyid` stub; added `removeRow()`
-  (`todos.js:194`) and `placeCaretAtEnd()`. Backspace on an empty top-level line removes
+  and `placeCaretAtEnd()`. Backspace on an empty top-level line removes
   it and puts the caret at the end of the previous line. Nested empty lines still outdent
   one level first and are only deleted once they reach the top level. Structural removal
   sets a `suppressBlur` flag so the blur handler doesn't reload the list and throw away
@@ -192,9 +191,14 @@ hairy. **Not yet exercised by loading unpacked in a real Chrome** — see §2.3.
 
 ---
 
-## 4. Phase 1 — Data model and storage (F1)
+## 4. Phase 1 — Data model and storage (F1) ✅ done
 
-> **This is the keystone. F2–F5 all depend on it. Do it before them.**
+> **This was the keystone. F2–F5 all depend on it, and now can build on it.**
+> All six tasks (§4.2) landed on the `f1-storage-model` branch, each verified with a
+> from-scratch harness in the scratchpad (no npm in the repo, by design — see each
+> task's notes for what to rebuild). **Not yet loaded unpacked in a real Chrome** — see
+> §2.3; treat it as thoroughly exercised against stubbed `chrome.storage`, not as
+> field-verified.
 
 The whole extension exists because Jot had size restrictions.
 `chrome.storage.sync` limits, from the Chrome extensions docs:
@@ -313,7 +317,7 @@ this section if `store.js` changes materially.
 #### F1-2 · Write the v1 → v2 migration ✅ done
 **Files:** `js/store.js`
 Read the legacy `todos_notes` nested-array value. Walk it with the same
-"array-follows-its-parent" rule `createNotes()` uses (`todos.js:61`). Emit v2 notes with
+"array-follows-its-parent" rule the old `createNotes()` used (§2.1). Emit v2 notes with
 generated ids, `createdAt = Date.now()`, `done: false`, `source: null`.
 
 - Run once, guarded by `schema_version`.
@@ -434,11 +438,32 @@ itself, and a full sequence where tab A has unsaved, in-progress text and tab B 
 an unrelated change (touching a different note) — tab A's own text survives into Store
 rather than being lost to the resulting re-render.
 
-#### F1-5 · Make the save indicator real
+#### F1-5 · Make the save indicator real ✅ done
 **Files:** `todos.js`, `css/style.css`
 Replace the P0-5 stopgap with a proper status affordance: idle / saving / synced /
 **local-only** / **failed**, plus a capacity readout ("312 notes · 41 KB synced").
 **Done when:** every failure mode from F1-3 has a distinct visible state.
+
+Landed as: the existing transient `saving`/`saved`/`failed` cycle (P0-5) still fires
+immediately around every local Store call, but `saved` now clears back to a persistent
+capacity summary (`Store.getSyncStatus()`) instead of going blank, computed as
+`totalNotes - syncedCount` local-only (a deliberately coarse bucket — too-large-to-sync,
+evicted-for-capacity, still-queued and sync-unavailable all read the same "N local-only"
+today; distinguishing them in the UI is a natural follow-up, not required by the
+Done-when). A sync mirror write failure (new: `Store.onSyncError`, since `flushDirty()`'s
+failures previously only reached `console.error`) shows the same `failed` styling with a
+"Sync error —" prefix, so it reads as distinct from a local save failure without a second
+visual language. The summary also refreshes on a 3s poll, since a debounced sync push
+finishing doesn't itself touch `chrome.storage.local` and so doesn't fire the
+`Store.onChange` this file already listens to for F1-4 — simpler than plumbing a
+dedicated "sync progress" event through `js/store.js` for a once-every-few-seconds
+readout.
+
+Verified with the same JSDOM harness as F1-4/F1-6: the status line settles on a
+`status-synced` summary mentioning the note count and a byte figure once the initial
+push completes, and breaking `chrome.storage.sync.set` specifically (leaving
+`chrome.storage.local` working, so it's a pure mirror failure, not a data-loss one)
+surfaces `status-failed` with "Sync error —" text within the debounce window.
 
 #### F1-6 · Rewrite the render layer against the new model ✅ done
 **Files:** `todos.js`, `css/style.css`
@@ -506,8 +531,9 @@ scratchpad-local `npm install jsdom`, not committed — no npm in the repo, by d
 ## 5. Phase 2 — Source-linked captures (F2)
 
 The single highest-value feature, because it's the only one unique to this extension
-and it is currently half-built. `background.js:38` already has `tab.url` and `tab.title`
-in scope and throws them away.
+and it is currently half-built. `background.js`'s `action.onClicked` handler already has
+`tab.url` and `tab.title` in scope (needed to call `chrome.scripting.executeScript`) and
+throws them away.
 
 A highlight without a backlink is a clipboard. With one, it's a research tool — which is
 the actual job for the PM use case: pulling quotes out of specs, competitor pages and
@@ -526,9 +552,11 @@ source: {
 }
 ```
 Keep the existing graceful degradation: on `chrome://`, the Web Store and PDF viewers the
-`executeScript` call throws and is caught (`background.js:41`). In that case, save nothing
-rather than an empty note — the current code pushes `''` and relies on a `filter` to drop
-it.
+`executeScript` call throws and is caught. Save nothing rather than an empty note — F1-6
+already made captures skip `Store.createNote` entirely when `text_selected` is empty
+(the old code pushed `''` and relied on a `filter` to drop it later); F2-1 just needs to
+carry `source` through that same already-narrowed path, not fix the empty-note issue
+again.
 **Done when:** a highlight saved from any normal page carries a resolvable url and title.
 
 #### F2-2 · Render the source chip
@@ -692,26 +720,29 @@ Recording these so they don't get relitigated:
 - **No third-party runtime dependencies.** The MV3 CSP forbids remote scripts, and the
   jQuery/Bootstrap CDN includes were deliberately removed during the migration
   (see `CLAUDE.md`). Anything new must be vendored and justified.
-- **No drag-and-drop reordering yet** — wanted, but it needs `Store.moveNote` and the
-  F1-6 render rewrite to be settled first. Revisit after Phase 3.
+- **No drag-and-drop reordering yet** — wanted, and `Store.moveNote` plus the F1-6 render
+  rewrite it needed have both landed, so it's now unblocked. Still deliberately not
+  scheduled; revisit after Phase 3.
 
 ---
 
 ## 10. Suggested order
 
 ```
-P0 ✅ ──►  F1  ──┬──►  F2  ──►  F5
-                 ├──►  F3
-                 └──►  F4
+P0 ✅ ──►  F1 ✅ ──┬──►  F2  ──►  F5
+                   ├──►  F3
+                   └──►  F4
 ```
 
 Phase 0 came first because you cannot trust test results until the delete and subtask
-buttons are known-good. **F1 is next.** Phase 1 before the rest, because F2–F5 each need per-note storage,
-stable ids and metadata fields — building any of them on the nested-string-array model
-means building them twice.
+buttons are known-good. Phase 1 came before the rest because F2–F5 each need per-note
+storage, stable ids and metadata fields — building any of them on the nested-string-array
+model would have meant building them twice.
 
-After F1, the branches are independent. F2 is the highest user-visible value; F3 is the
-smallest; F4 becomes necessary the moment F2 makes the list long.
+**The branches are now independent — pick any of F2/F3/F4 next.** F2 is the highest
+user-visible value; F3 is the smallest; F4 becomes necessary the moment F2 makes the list
+long. F5 depends on F2 landing first (captures need source metadata before notebooks are
+worth having).
 
 ---
 
@@ -720,10 +751,11 @@ smallest; F4 becomes necessary the moment F2 makes the list long.
 Wanted, but not in the top five. Listed so they aren't lost.
 
 - Markdown rendering while editing (bold, links, code)
-- Drag-to-reorder (see Non-goals; blocked on F1-6)
+- Drag-to-reorder (see Non-goals; F1-6 landed, so `Store.moveNote` is available — this is
+  now unblocked, just not scheduled)
 - Daily-notes mode — an auto-dated notebook per day
 - Themes and a configurable background (currently hardcoded to `images/black.jpg` at
-  `todos.js:35`)
+  `todos.js:33`)
 - Keyboard-only tree navigation (Tab/Shift-Tab to indent, Alt+↑/↓ to move)
 - Reminders / due dates — needs the `alarms` permission and a notification story
 - Undo (`Cmd+Z`) across structural operations, which the current model cannot support

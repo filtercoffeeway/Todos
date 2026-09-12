@@ -73,6 +73,14 @@ html {
 	pointer-events: auto;
 }
 
+/* F1-5: some notes aren't in the sync mirror right now (too large to sync,
+   evicted for capacity, or sync unavailable). Not an error -- local data is
+   never at risk -- so a mild amber rather than the failure red, but visible
+   enough to notice without opening devtools. */
+.status-local-only {
+	color: #ffcf8a;
+}
+
 .container {
 	width: 100%;
 	height: 100%;

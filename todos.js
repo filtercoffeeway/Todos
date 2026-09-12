@@ -39,9 +39,10 @@ window.onload = function() {
         return e.target.closest('.note');
     }
 
-    // Show what happened to the last save. 'saved' clears itself; 'failed'
-    // stays up, because a failed save means the note is gone and the user needs
-    // to know that without having a devtools console open.
+    // Show what happened to the last save. 'saved' clears itself -- back to
+    // the persistent sync/capacity summary below, not to blank -- 'failed'
+    // stays up, because a failed save means the note is gone and the user
+    // needs to know that without having a devtools console open.
     function setStatus(state, text) {
         if (!statusEl) {
             return;
@@ -51,11 +52,80 @@ window.onload = function() {
         statusEl.textContent = text;
         if (state == 'saved') {
             statusTimer = setTimeout(function() {
-                statusEl.className = 'status';
-                statusEl.textContent = '';
+                refreshSyncSummary();
             }, 1500);
         }
     }
+
+    // F1-5: a proper status affordance beyond the P0-5 stopgap. While
+    // nothing more urgent (saving/failed, above) is showing, #status
+    // reflects the mirror's overall state -- synced, partially local-only
+    // (evicted for capacity, too large to sync, or sync unavailable), or a
+    // capacity readout once everything's mirrored.
+    function formatBytes(n) {
+        if (n < 1024) {
+            return n + ' B';
+        }
+        return (n / 1024).toFixed(1) + ' KB';
+    }
+
+    function pluralNotes(n) {
+        return n + (n === 1 ? ' note' : ' notes');
+    }
+
+    function renderSyncSummary(status) {
+        if (!statusEl) {
+            return;
+        }
+        // Don't stomp on an in-flight save or a failure the user still
+        // needs to see.
+        if (statusEl.classList.contains('status-saving') || statusEl.classList.contains('status-failed')) {
+            return;
+        }
+
+        var state;
+        var text;
+        if (!status.enabled) {
+            state = 'local-only';
+            text = status.totalNotes ? pluralNotes(status.totalNotes).concat(' (sync unavailable)') : '';
+        } else {
+            // "Local-only" here covers every reason a note isn't mirrored
+            // right now: too large to sync, evicted for capacity, still
+            // queued to push, or just not attempted yet --
+            // Store.getSyncStatus() doesn't (and doesn't need to)
+            // distinguish those for this readout.
+            var localOnly = Math.max(0, status.totalNotes - status.syncedCount);
+            if (localOnly > 0) {
+                state = 'local-only';
+                text = pluralNotes(status.syncedCount).concat(
+                    ' · ', formatBytes(status.syncedBytes), ' synced — ',
+                    localOnly, ' local-only'
+                );
+            } else if (status.totalNotes > 0) {
+                state = 'synced';
+                text = pluralNotes(status.totalNotes).concat(' · ', formatBytes(status.syncedBytes), ' synced');
+            } else {
+                state = 'idle';
+                text = '';
+            }
+        }
+
+        statusEl.className = 'status status-'.concat(state);
+        statusEl.textContent = text;
+    }
+
+    function refreshSyncSummary() {
+        Store.getSyncStatus().then(renderSyncSummary).catch(function() {});
+    }
+
+    // A sync push/eviction failure has no other UI -- background.js has a
+    // toolbar badge for capture failures, but nothing captures a mid-
+    // session sync hiccup otherwise. Local data is never at risk from this
+    // (storage.local is unaffected either way), but the user should still
+    // be able to tell sync is stuck without opening devtools.
+    Store.onSyncError(function(err) {
+        setStatus('failed', 'Sync error — '.concat(err && err.message ? err.message : 'storage error'));
+    });
 
     // Wraps a Store call with the saving/saved/failed status cycle. Rejects
     // with the same error it was given, after showing it, so callers that
@@ -122,10 +192,23 @@ window.onload = function() {
 
     withLocalMutation(Store.init().then(function() {
         return render();
-    })).catch(function(err) {
+    })).then(function() {
+        refreshSyncSummary();
+    }).catch(function(err) {
         console.error('Todos: failed to initialize store', err);
         setStatus('failed', 'Could not load notes');
     });
+
+    // Keeps the capacity readout live. Store.onChange alone doesn't cover
+    // this: a debounced sync push finishing doesn't touch chrome.storage.
+    // local (nothing here changed), and a local edit's own onChange handler
+    // (below) skips itself entirely while this tab made the change -- so a
+    // short poll is simpler than plumbing a dedicated "sync progress" event
+    // through js/store.js for a once-every-few-seconds readout.
+    Store.onChange(function() {
+        refreshSyncSummary();
+    });
+    setInterval(refreshSyncSummary, 3000);
 
     // F1-4: live updates from elsewhere -- another open new tab, a
     // highlight captured via the toolbar button, or a note pulled in from
