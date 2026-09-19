@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"description": "Simple note taking application from any webpage !!!",
 	"manifest_version": 3,
-	"permissions": [ "storage", "activeTab", "scripting" ],
+	"permissions": [ "storage", "activeTab", "scripting", "contextMenus", "favicon" ],
 	"icons": {
 		"16": "images/icon16.png",
 		"48": "images/icon48.png",
