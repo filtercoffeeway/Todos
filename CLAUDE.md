@@ -48,6 +48,24 @@ the note being moved, so moving a *subtree* can push its descendants past `MAX_D
 `indentRow` guards against this with `subtreeHeight()`; **any future caller (drag-to-
 reorder) needs the same guard, or the fix moved into the Store.**
 
+## Theming: light and dark (Phase 7 — see ROADMAP.md §13)
+
+Follows the OS by default; `⋯` menu → Theme overrides it. Every colour in `css/style.css`
+is a `var(--token)` defined once in `:root` as `light-dark(light, dark)`, so **add a token,
+never a literal** — a stray `#fff` is invisible on the cream theme. Dark is espresso
+`#17100A` with a CSS-gradient texture (the old `images/black.jpg` is gone from use); light
+is cream `#FAF3E8`. Gold `#C49A3C` is 2.4:1 on cream, so in light mode it is never text or
+a needed stroke — the accents there are the browns.
+
+The preference is `prefs.theme` in Store (device-local). `js/theme.js` is a blocking
+script in `<head>` that applies it before first paint from a `localStorage` mirror — it is
+a file because the CSP forbids inline script, and a mirror because `chrome.storage` is
+async. `light-dark()` needs **Chrome 123+** (`minimum_chrome_version` in the manifest).
+
+Two traps: the wordmark is an `<img>` so it has two files, one shown per theme (the only
+place the condition is spelled out in CSS); and SVGs loaded via `<img>` must be
+well-formed XML — `--` inside a comment kills the whole image.
+
 ## Branding
 
 **The product is still called Todos.** Filter Coffee Way is the publisher, not the
@@ -61,11 +79,12 @@ so app and publisher read as one family:
 | Asset | Role |
 |---|---|
 | `images/todos-wordmark.svg` | Masthead lockup: checkbox-with-steam mark, "Todos" in Georgia cream, gold rule. Replaces the old green pixel `images/todos.png`. |
+| `images/todos-wordmark-light.svg` | Light-theme twin of the wordmark: brown text, deeper gold (`#A8791F`) for the check and rule. |
 | `images/icon.svg` | Icon art for the 48 and 128 renders — same mark on a dark tile with a gold hairline. |
 | `images/icon-small.svg` | The 16px cut. Steam and hairline are dropped and strokes thickened; scaling `icon.svg` down instead gives sub-pixel strokes that grey out. |
 | `images/icon16/48/128.png` | Rendered from the two SVGs above by `/tmp/todos-harness/render-icons.js`. They used to be an unrelated orange pencil. |
 
-`images/todos.png` and `images/note.png` are now unreferenced, kept in case the Web Store
+`images/todos.png`, `images/note.png` and `images/black.jpg` are now unreferenced, kept in case the Web Store
 listing still wants them.
 
 **Trap if you ever pull from the publisher's own assets** (`../FilterCoffeeWay/blog/brand/logo/`):

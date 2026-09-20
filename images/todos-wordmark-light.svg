@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 32 262 96" role="img" aria-label="Todos">
+  <!-- Light-theme twin of todos-wordmark.svg: same lockup, recoloured for a
+       cream page. The cream wordmark would vanish there, and the brand gold
+       (#C49A3C) is only 2.4:1 on cream, so the check and the rule use a
+       deeper gold (#A8791F, 3.5:1) and the steam uses the mid brown.
+       viewBox casing matters; see the note in todos-wordmark.svg. -->
+  <!-- steam -->
+  <path d="M 36 58 Q 31 50 36 42" fill="none" opacity="0.5" stroke="#8B5E3C" stroke-linecap="round" stroke-width="3"/>
+  <path d="M 51 56 Q 46 47 51 38" fill="none" opacity="0.5" stroke="#8B5E3C" stroke-linecap="round" stroke-width="3"/>
+  <path d="M 66 58 Q 61 50 66 42" fill="none" opacity="0.5" stroke="#8B5E3C" stroke-linecap="round" stroke-width="3"/>
+  <!-- checkbox -->
+  <rect x="22" y="62" width="58" height="58" rx="11" fill="none" stroke="#8B5E3C" stroke-width="5"/>
+  <path d="M 36 92 L 48 104 L 68 77" fill="none" stroke="#A8791F" stroke-linecap="round" stroke-linejoin="round" stroke-width="7"/>
+  <!-- divider + wordmark -->
+  <line x1="106" x2="106" y1="44" y2="122" stroke="#5C3317" stroke-width="1"/>
+  <text x="124" y="98" fill="#2C1A0E" font-family="Georgia, 'Times New Roman', serif" font-size="46" letter-spacing="1">Todos</text>
+  <line x1="124" x2="272" y1="112" y2="112" stroke="#A8791F" stroke-width="1"/>
+</svg>

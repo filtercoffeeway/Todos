@@ -8,26 +8,15 @@
     <title>Todos</title>
 
     <link href='css/style.css' rel='stylesheet' type='text/css'>
-    <style>
-      [contenteditable]:focus {
-          outline: 0px solid transparent;
-      }
-      div_time{
-        position: fixed;
-        top:20px;
-        right:40px;
-        font-size: 50px;
-        color: rgb(251, 251, 251);
-        font-family: verdana;
-      }
-    </style>
+    <!-- Sync, in <head>, so the saved theme is applied before first paint. -->
+    <script src="js/theme.js"></script>
   </head>
   <body>
     <div class="container-fluid">
       <div_time>
         <span id="time"></span>
       </div_time>
-      <p class="masthead"><img class="wordmark" src="images/todos-wordmark.svg" alt="Todos">by FilterCoffeeWay</p>
+      <p class="masthead"><img class="wordmark wordmark-dark" src="images/todos-wordmark.svg" alt="Todos"><img class="wordmark wordmark-light" src="images/todos-wordmark-light.svg" alt="Todos">by FilterCoffeeWay</p>
       <nav class="notebook-bar">
         <div id="tabs" class="tabs" role="tablist" aria-label="Notebooks"></div>
         <div class="toolbar">
@@ -41,6 +30,11 @@
               <button type="button" class="menu-item" role="menuitemradio" data-action="capture-end" aria-checked="true">At the end of the current notebook</button>
               <button type="button" class="menu-item" role="menuitemradio" data-action="capture-lastEdited" aria-checked="false">Under the note I last edited</button>
               <div class="menu-sep"></div>
+              <div class="menu-label">Theme</div>
+              <button type="button" class="menu-item" role="menuitemradio" data-action="theme-system" aria-checked="true">Match system</button>
+              <button type="button" class="menu-item" role="menuitemradio" data-action="theme-light" aria-checked="false">Light</button>
+              <button type="button" class="menu-item" role="menuitemradio" data-action="theme-dark" aria-checked="false">Dark</button>
+              <div class="menu-sep"></div>
               <div class="menu-label">Export</div>
               <button type="button" class="menu-item" role="menuitem" data-action="export-md-current">Markdown — this notebook</button>
               <button type="button" class="menu-item" role="menuitem" data-action="export-md-all">Markdown — all notebooks</button>
@@ -51,7 +45,7 @@
           </div>
         </div>
       </nav>
-      <div class='input' id='data' style="color:#fdfdfd;font-family:Verdana;font-size:22px;">
+      <div class='input' id='data' style="font-family:Verdana;font-size:22px;">
       </div>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>

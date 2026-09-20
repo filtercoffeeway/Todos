@@ -13,7 +13,7 @@
  *                 collapsed, archived, createdAt, updatedAt, source, tags:[...]}
  *   notebooks_meta: {orderUpdatedAt, activeId, activeUpdatedAt,
  *                    tombstones: {<notebookId>: deletedAt}}   // F5-1, synced
- *   prefs: {hideDone, captureTarget}                          // device-local UI prefs
+ *   prefs: {hideDone, captureTarget, theme}                   // device-local UI prefs
  *   last_edited_note_id: "<id>"                               // F2-4 capture target
  *
  * `archived` (F3-4) and notebook `nameUpdatedAt` (F5-1) were added after
@@ -43,7 +43,7 @@
     var NB_META_KEY = 'notebooks_meta';
     var PREFS_KEY = 'prefs';
     var LAST_EDITED_KEY = 'last_edited_note_id';
-    var DEFAULT_PREFS = { hideDone: false, captureTarget: 'end' };
+    var DEFAULT_PREFS = { hideDone: false, captureTarget: 'end', theme: 'system' };
     var NOTEBOOK_NAME_MAX = 100;
     // Notebook tombstones are tiny, but they live in one synced item; keep
     // them bounded. 90 days is far longer than any device plausibly stays

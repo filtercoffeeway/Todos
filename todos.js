@@ -46,8 +46,10 @@ window.onload = function() {
     // Per-render memo for checkStateOf().
     var stateMemo = new Map();
 
-    //Set the background images
-    document.body.style.backgroundImage = "url('images/black.jpg')";
+    // F7: another new-tab page changed the theme; catch the open menu up.
+    Theme.onChange = function() {
+        syncToolbar();
+    };
 
     if (!/Mac|iPhone|iPad/.test(navigator.platform)) {
         document.getElementById('search-key').textContent = 'Ctrl+K';
@@ -219,6 +221,7 @@ window.onload = function() {
     }).then(function(results) {
         activeNotebookId = results[0];
         prefs = results[1];
+        Theme.apply(prefs.theme);
         syncToolbar();
         return Promise.all([renderTabs(), render()]);
     })).then(function() {
@@ -1348,6 +1351,10 @@ window.onload = function() {
             var target = item.dataset.action.slice('capture-'.length);
             item.setAttribute('aria-checked', prefs.captureTarget === target ? 'true' : 'false');
         });
+        menuEl.querySelectorAll('[data-action^="theme-"]').forEach(function(item) {
+            var theme = item.dataset.action.slice('theme-'.length);
+            item.setAttribute('aria-checked', Theme.current() === theme ? 'true' : 'false');
+        });
         tabsEl.querySelectorAll('.tab').forEach(function(tab) {
             tab.setAttribute('aria-selected', tab.dataset.id === activeNotebookId && view === 'main' ? 'true' : 'false');
         });
@@ -1413,6 +1420,16 @@ window.onload = function() {
             withLocalMutation(Store.setPrefs({ captureTarget: action.slice('capture-'.length) })).then(function(p) {
                 prefs = p;
                 syncToolbar();
+            }).catch(function(err) {
+                setStatus('failed', 'Not saved — '.concat(errorText(err)));
+            });
+        } else if (action.indexOf('theme-') === 0) {
+            // Applied first, so the page changes at the click; the pref is
+            // saved behind it.
+            Theme.apply(action.slice('theme-'.length));
+            syncToolbar();
+            withLocalMutation(Store.setPrefs({ theme: Theme.current() })).then(function(p) {
+                prefs = p;
             }).catch(function(err) {
                 setStatus('failed', 'Not saved — '.concat(errorText(err)));
             });

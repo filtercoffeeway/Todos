@@ -36,6 +36,7 @@ On the new tab page, while editing a note:
 - **Nested tasks** — subtasks up to six levels deep. `Tab` and `Shift + Tab` nest and un-nest as you type; no buttons to hunt for.
 - **Search everything** — `Cmd/Ctrl + K`, with filters: `is:done`, `is:open`, `is:captured`, `site:example.com`, `after:2026-01-01`, and `#tags` you type into notes.
 - **Notebooks** — separate tabs for Work, Personal, Meeting notes…; right-click capture can target any of them.
+- **Light and dark** — follows your system setting, or pick one from the `⋯` menu.
 - **Your data is yours** — export a notebook (or all of them) as Markdown, or everything as a JSON backup you can import again.
 - **Cross-device sync** — notes and notebooks sync across all devices where you're signed into Chrome via `chrome.storage.sync`; everything is stored locally first, so sync limits never lose data.
 
@@ -46,6 +47,7 @@ Built as a Chrome Manifest V3 extension, with no dependencies and no build step:
 - `background.js` (service worker) — reads the selection on demand via `chrome.scripting` + `activeTab` when you press the shortcut or use the context menu; no content script runs on your pages
 - `js/store.js` — all storage: `chrome.storage.local` as the source of truth, mirrored per note into `chrome.storage.sync`
 - `js/palette.js` — the search palette
+- `js/theme.js` + `css/style.css` — light/dark via CSS `light-dark()` tokens, so it needs Chrome 123 or newer
 
 See [ROADMAP.md](ROADMAP.md) for the design notes.
 
