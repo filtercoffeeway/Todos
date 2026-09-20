@@ -1098,8 +1098,8 @@ Wanted, but not in the top five. Listed so they aren't lost.
 - Drag-to-reorder (see Non-goals; F1-6 landed, so `Store.moveNote` is available — this is
   now unblocked, just not scheduled)
 - Daily-notes mode — an auto-dated notebook per day
-- Themes and a configurable background (currently hardcoded to `images/black.jpg` near
-  the top of `todos.js`)
+- A configurable background (colour or image). Light/dark themes shipped in F7 (§13);
+  the canvas is `--canvas` plus three gradients on `html`, so this is now a small step
 - Keyboard-only tree navigation — Tab/Shift+Tab landed in F6 (§11); Alt+↑/↓ to move a
   row up or down among its siblings is still open
 - Reminders / due dates — needs the `alarms` permission and a notification story
@@ -1111,3 +1111,81 @@ Wanted, but not in the top five. Listed so they aren't lost.
   Unreachable at human typing speed, reachable by automation — the browser harness types
   with a 25 ms per-key delay for this reason. Fix: insert and focus the row
   synchronously, and attach the Store id when `createNote` resolves.
+
+---
+
+## 13. Phase 7 — Light and dark themes (F7) ✅ done
+
+The page was one fixed look: cream text on `images/black.jpg`, a grey-blue wood-plank
+stock photo set inline from `todos.js`. It sat oddly against the Phase 6 brand (warm
+browns), had no recorded provenance, and every colour in the stylesheet assumed a dark
+canvas. Now there are two themes that follow the OS by default, with an override in the
+`⋯` menu (**Theme: Match system / Light / Dark**).
+
+### 13.1 Decisions
+
+- **Dark is espresso `#17100A` plus a CSS texture, not the photo and not flat black.**
+  A soft centre glow and faint vertical plank seams (96px, the old wallpaper's rhythm)
+  are drawn as three gradients on `html`, about 1KB against a 175KB photo, in brand
+  colours, scaling to any window. Flat black was rejected: it halates around 22px cream
+  text and flattens every translucent overlay the UI is built from. `images/black.jpg`
+  is now unreferenced and left in the repo, like `todos.png` and `note.png`.
+- **Light is cream `#FAF3E8` with `#2C1A0E` text.** Same glow and seams, in brown at
+  3–5% alpha.
+- **Gold does not carry anything in light mode.** `#C49A3C` on cream is 2.4:1. Text and
+  visible strokes use the browns there (`#8B5E3C` 5.1:1, `#5C3317` 9.8:1); the light
+  wordmark's check and rule use a deeper gold, `#A8791F` (3.5:1).
+- **Accents moved to the brand palette.** The old blues: tag (`#9fd3ff`), palette selection and primary button
+  (`#2f5f8f`) are now brand: gold `#D9B25A` tags on dark / brown `#8B5E3C` on light, a
+  `#5C3317` selected row, and a gold (dark) / brown (light) primary button.
+
+### 13.2 How it works
+
+- **Tokens.** `css/style.css` opens with one `:root` block; every colour below it is a
+  `var(--token)`, and each token is `light-dark(<light>, <dark>)`. `color-scheme: light
+  dark` makes that follow the OS; `html[data-theme="light"|"dark"]` pins it. One line per
+  token with both values together, instead of two blocks to keep in step. **Needs Chrome
+  123+**, so the manifest sets `minimum_chrome_version: "123"` — on an older Chrome the
+  tokens would be invalid and the page would render unstyled rather than fall back.
+- **The preference** is `prefs.theme` (`'system'` default) in Store, device-local like the
+  other prefs: two machines can legitimately differ. Prefs written before F7 have no
+  `theme` and read back as `system`.
+- **No flash.** `chrome.storage` is async, so it cannot be read before first paint, and
+  the MV3 CSP forbids an inline script. `js/theme.js` is therefore an external, blocking
+  script in `<head>` that reads a `localStorage` mirror of the last applied theme and sets
+  `data-theme` synchronously. Store prefs stay the source of truth: `todos.js` calls
+  `Theme.apply(prefs.theme)` once they load, which reconciles the mirror. `'system'` sets
+  no attribute, so the CSS follows the OS with no JS at all. A `storage` event keeps a
+  second open new-tab page in step.
+- **The wordmark is the one place the theme condition is spelled out.** It is an `<img>`,
+  so it cannot inherit a colour; `todos-wordmark.svg` (cream, for dark) and
+  `todos-wordmark-light.svg` (brown, for cream) are both in the markup and CSS shows one.
+  `light-dark()` only produces colours, so this needs a media query and an attribute rule.
+  Both SVGs must be well-formed XML: an `<img>` SVG with `--` inside a comment fails to
+  load and shows alt text (found and fixed while building the light one).
+
+### 13.3 Changed along the way
+
+- The inline `<style>` in `todos.html` moved into `style.css` (clock colour is a token
+  now). `[contenteditable]:focus` is deliberately *last* in the file: it used to load after
+  the stylesheet, and at equal specificity that is what lets it beat
+  `.tab-label[contenteditable]`'s outline. Moving it earlier would change behaviour.
+- Removed the dead `.container` rule, a 40% black scrim over the old wallpaper — nothing
+  uses `class="container"` (`todos.html` has `container-fluid`).
+- `::selection` now sets its text colour too. It used to set only a peach background under
+  white text.
+- Completed-note opacity 0.45 → 0.5: 0.45 of the ink on cream was 2.8:1.
+- Contrast for each text/background pair was computed, not eyeballed; the muted tiers use
+  different alphas per theme so both clear 4.5:1.
+
+### 13.4 Scope limits
+
+- If `localStorage` is cleared while an explicit theme is saved, the first paint is the
+  OS theme for one frame before Store loads and corrects it. Unreachable in normal use.
+- Verified in Chromium with emulated `prefers-color-scheme`, not by switching the real OS
+  setting in branded Chrome (see CLAUDE.md, Testing).
+- Chrome's default blue focus ring is untouched; it is the one blue left on the page.
+- `manifest.json` `action.default_icon` still points at the old pencil `images/note.png`.
+  That predates this and is separate from theming.
+- Not built: a *configurable* background (colour or image). The token layer makes it a
+  small step (`--canvas` and the three gradients are the whole surface); it stays in §12.
