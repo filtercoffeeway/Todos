@@ -23,16 +23,41 @@
     </style>
   </head>
   <body>
-    <div class="container-fluid"> 
+    <div class="container-fluid">
       <div_time>
         <span id="time"></span>
       </div_time>
       <p style="color:#fdfdfd;"><img src="images/todos.png" style="padding-left: 50px;"/>by MadrasCoders</p>
+      <nav class="notebook-bar">
+        <div id="tabs" class="tabs" role="tablist" aria-label="Notebooks"></div>
+        <div class="toolbar">
+          <button type="button" id="btn-search" title="Search notes">Search <kbd id="search-key">⌘K</kbd></button>
+          <button type="button" id="btn-hide-done" aria-pressed="false" title="Hide completed notes">Hide done</button>
+          <button type="button" id="btn-archive" aria-pressed="false" title="Show archived notes">Archive</button>
+          <div class="menu-wrap">
+            <button type="button" id="btn-menu" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+            <div id="menu" class="menu" role="menu" hidden>
+              <div class="menu-label">Highlights land</div>
+              <button type="button" class="menu-item" role="menuitemradio" data-action="capture-end" aria-checked="true">At the end of the current notebook</button>
+              <button type="button" class="menu-item" role="menuitemradio" data-action="capture-lastEdited" aria-checked="false">Under the note I last edited</button>
+              <div class="menu-sep"></div>
+              <div class="menu-label">Export</div>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-md-current">Markdown — this notebook</button>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-md-all">Markdown — all notebooks</button>
+              <button type="button" class="menu-item" role="menuitem" data-action="export-json">JSON backup — everything</button>
+              <div class="menu-sep"></div>
+              <button type="button" class="menu-item" role="menuitem" data-action="import-json">Import JSON backup…</button>
+            </div>
+          </div>
+        </div>
+      </nav>
       <div class='input' id='data' style="color:#fdfdfd;font-family:Verdana;font-size:30px;">
       </div>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
     <script src="js/store.js"></script>
+    <script src="js/palette.js"></script>
     <script src="todos.js"></script>
   </body>
 </html>

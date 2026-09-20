@@ -18,12 +18,28 @@ The single `chrome.storage.sync` key with its 8KB/100KB caps (the "Known open it
 section used to flag) is gone. `js/store.js` now owns storage: `chrome.storage.local`
 (one item per note) is the source of truth, mirrored into `chrome.storage.sync` per-note
 with LRU eviction when the mirror is full. `todos.js`/`background.js` talk to notes only
-through `Store.*`. Details, scope limits (no delete propagation across devices yet, no
-verified answer on how sync write quotas count multi-key batches), and what's still
-open (F1 is done; F2 onward have not been started) are in ROADMAP.md §4.
+through `Store.*`. Details and scope limits (no verified answer on how sync write quotas
+count multi-key batches) are in ROADMAP.md §4.
 
-## Next
+## Relaunch features: done (Phases 2–5 — see ROADMAP.md §5–§8)
 
-Not yet re-tested by loading unpacked in Chrome (`chrome://extensions` → Developer mode → Load unpacked) — everything above is verified against stubbed `chrome.storage` in scratchpad harnesses, not a real browser.
+Source-linked captures (url/title/text-fragment chip; right-click capture of selection,
+link, image; capture target preference), checkboxes with cascading completion, collapse,
+hide-done and archive, the Cmd/Ctrl+K palette (`js/palette.js`) with `is:`/`site:`/
+`after:`/`#tag` filters, notebooks (tabs, synced via one `s:nbs` item with tombstones),
+Markdown export and JSON export/import. New permissions: `contextMenus`, `favicon`.
+ROADMAP.md §4.3 lists F1 bugs fixed along the way (fresh-device tree flattening, dropped
+keystrokes from the sync echo, newline loss) and the one known open data issue: **note
+deletes can be resurrected by another device's re-push** — needs per-note tombstones.
 
-See `ROADMAP.md` for the post-MV3 relaunch plan — read it before starting any new task here.
+## Testing
+
+Verified with two harnesses kept outside the repo (no npm here, by design — how to
+rebuild them is in ROADMAP.md §2.3): a Node store harness with two simulated devices
+sharing a stubbed sync area, and Playwright's Chromium loading the extension unpacked
+and driving the real new tab page, service worker and context-menu handlers.
+
+**Not yet exercised in branded Google Chrome by hand**, and cross-device sync has only
+run against the stub — two real signed-in profiles is the remaining check.
+
+See `ROADMAP.md` for the plan and what's next — read it before starting any new task here.

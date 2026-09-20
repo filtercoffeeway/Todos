@@ -31,22 +31,23 @@ a size limit and currently has a smaller one than the tool it replaced.** See F1
 
 ## 2. Current architecture
 
-> **Phase 1 is done (see §4.2) — this section describes the pre-F1 state.**
-> The data model is now the one in §4.1, owned by `js/store.js`; `todos.js` and
-> `background.js` render/mutate through `Store.*` and never touch `chrome.storage`
-> directly. §2.1 below is kept as-is because the migration in F1-2 depends on exactly
-> the parsing rule it documents.
+> **Phases 0–5 are done (see §3–§8) — the table below is current; §2.1/§2.2 describe
+> the pre-F1 state.** The data model is the one in §4.1, owned by `js/store.js`;
+> `todos.js` and `background.js` render/mutate through `Store.*` and never touch
+> `chrome.storage` directly. §2.1 below is kept as-is because the migration in F1-2
+> depends on exactly the parsing rule it documents.
 
-Six files matter.
+Seven files matter.
 
 | File | Role |
 |---|---|
-| `manifest.json` | MV3 manifest. Permissions: `storage`, `activeTab`, `scripting`. Overrides `newtab` → `todos.html`. Binds `_execute_action` to `Cmd+E` / `Ctrl+Q`. |
-| `js/store.js` | Storage module (§4.1/§4.2 F1-1). Owns every `chrome.storage` call — the v1→v2 migration, and the promise-based `Store.*` API everything else renders/mutates through. Loaded before `background.js` (`importScripts`) and `todos.js` (`<script>` tag). |
-| `background.js` | Service worker. Two listeners: `onInstalled` (writes a welcome note via `Store.createNote`), `action.onClicked` (reads the tab's selection via `chrome.scripting.executeScript` and saves it via `Store.createNote`). |
-| `todos.html` | The new tab page. A clock, a logo, and one `<div class="input" id="data">` that holds every note. |
-| `todos.js` | Renders `Store.getTree()` into DOM, handles Enter/Backspace/blur/subtask by calling `Store.*` mutators. All inside one `window.onload` closure with no exports. |
-| `css/style.css` | Indentation is depth-driven: one `.note` rule reading a `--depth` custom property set per row, not per-level classes. |
+| `manifest.json` | MV3 manifest. Permissions: `storage`, `activeTab`, `scripting`, `contextMenus` (F2-5), `favicon` (F2-2 — Chrome's local favicon cache, no network). Overrides `newtab` → `todos.html`. Binds `_execute_action` to `Cmd+E` / `Ctrl+Q`. |
+| `js/store.js` | Storage module (§4.1/§4.2 F1-1). Owns every `chrome.storage` call — the v1→v2 migration, the sync mirror (notes and, since F5-1, notebooks), and the promise-based `Store.*` API everything else renders/mutates through: notes, notebooks, prefs, capture targeting, search, export/import. Loaded before `background.js` (`importScripts`) and `todos.js` (`<script>` tag). |
+| `js/palette.js` | F4: the Cmd/Ctrl+K command palette and its `is:`/`site:`/`after:`/`#tag` query parser. Talks to the page only through the callbacks `todos.js` passes to `Palette.init()`. |
+| `background.js` | Service worker. Toolbar/shortcut capture (`action.onClicked`) and right-click capture (`contextMenus.onClicked`), both saving through `Store.captureNote` with a source (url, title, text fragment). Keeps the context menu's notebook submenu in step via `Store.onNotebooksChanged`. Writes the welcome note on install. |
+| `todos.html` | The new tab page. A clock, a logo, the notebook tabs + toolbar (search, hide done, archive, ⋯ menu), and one `<div class="input" id="data">` that holds the current notebook's notes. |
+| `todos.js` | Renders `Store.getTree()` into DOM (checkbox, disclosure triangle, `#tag` highlighting, source chip per row), handles editing, notebook tabs, the toolbar/menu, export/import, and palette jumps. All inside one `window.onload` closure with no exports. |
+| `css/style.css` | Indentation is depth-driven: one `.note` rule reading a `--depth` custom property set per row, not per-level classes. Rows are flex: controls on the first line, text wraps beside them. |
 
 ### 2.1 The pre-F1 data model (historical; the migration in F1-2 depends on this)
 
@@ -148,11 +149,28 @@ After editing:
 - **Reset to a clean state** — `chrome.storage.sync.clear(); chrome.storage.local.clear()`
   then reload the tab.
 
-**Before starting any task, snapshot your real notes:**
+**Before starting any task, snapshot your real notes:** ⋯ menu → *JSON backup —
+everything* (F5-4). From the console, the raw equivalent is:
 ```js
-chrome.storage.sync.get(null, d => console.log(JSON.stringify(d)))
+chrome.storage.local.get(null, d => console.log(JSON.stringify(d)))
 ```
 Copy that somewhere. Several tasks here rewrite storage in place.
+
+**Test harnesses (not in the repo — no npm here, by design).** F2–F5 were verified with
+two, kept in a scratch directory; rebuild them from this description if a change gets
+hairy:
+- *Store harness* — Node, no dependencies. Loads `js/store.js` into separate `vm`
+  contexts ("devices"), each with its own stubbed `chrome.storage.local` and one shared
+  `chrome.storage.sync`; the stub fires `onChanged` in every attached context before the
+  write callback, like Chrome. Run it twice: once with `get(null)` returning keys in
+  insertion order, once **sorted** — real storage is LevelDB-backed, and sorted reads are
+  what exposed the bootstrap-flattening bug below.
+- *Browser harness* — Playwright's bundled Chromium (branded Chrome ≥137 ignores
+  `--load-extension`), loading a **copy** of the extension with two harness-only changes:
+  `host_permissions: ["<all_urls>"]` (Playwright can't click the toolbar button to grant
+  `activeTab`) and a prelude in `background.js` that records the `action`/`contextMenus`
+  listeners and `contextMenus.create` calls so the test can invoke captures from the
+  service worker. Type with a ~25 ms per-key delay — see the known limitation in §11.
 
 ---
 
@@ -526,9 +544,42 @@ migrating and rendering correctly through the full page, and a static grep confi
 no id-splitting anywhere in `todos.js`. Harness lives in the scratchpad (plus a
 scratchpad-local `npm install jsdom`, not committed — no npm in the repo, by design).
 
+### 4.3 F1 fixes made during F2–F5
+
+Found while building on F1 and fixed in `js/store.js`/`todos.js`; each has a harness
+test that fails against the pre-fix code:
+
+- **A fresh device flattened synced trees.** `bootstrapSync` merged the remote mirror in
+  key order; a child seen before its parent landed at root, and that "correction" was
+  pushed back to every device. With sorted reads, ~half of all children were flattened
+  (14 of 30 still nested in the harness). Remote batches — bootstrap and multi-key
+  `onChanged` — now merge parents-first (`mergeRemoteBatch`).
+- **Keystrokes dropped ~500 ms after an edit.** Every device's own sync push echoes back
+  through `storage.onChanged('sync')`, and `handleRemoteSyncChanges` reported those
+  echoes as changes even when nothing merged — so the tab re-rendered mid-typing and a
+  key pressed during that async window was lost. Now only notes whose local copy
+  actually changed are reported, and `render()` itself captures the focused line's live
+  text and caret at the last moment and restores both, so a re-render for a *real*
+  remote change can't eat keystrokes either.
+- **Blur on an untouched line rewrote the note** (bumping `updatedAt`, spending a sync
+  write, and able to beat a newer edit from another device under LWW). `Store.updateNote`
+  is now a no-op when nothing changes.
+- **Multi-line notes lost their line breaks on first blur.** `innerText` of a
+  `white-space: normal` element flattens `\n`; `.note-text` is now `pre-wrap`. It's also
+  `contenteditable="plaintext-only"`, so pasting from a page no longer drags formatting
+  into a note.
+- **Concurrent cross-device moves could form a cycle** (A under B here, B under A there);
+  `applyRemoteFieldsToLocal` now lands the note at root instead.
+
+**Still open, not fixed here: deletes can be resurrected.** Beyond "deletions don't
+propagate" (F1-3), a device that still has a deleted note locally re-pushes it at its next
+`bootstrapSync` (it's "not in the mirror"), and the deleting device then re-adopts it.
+Notebook deletes are safe (F5-1 tombstones); note deletes need per-note tombstones — a
+bounded `s:tomb` item (id → deletedAt, pruned) would fit in one 8 KB sync item.
+
 ---
 
-## 5. Phase 2 — Source-linked captures (F2)
+## 5. Phase 2 — Source-linked captures (F2) ✅ done
 
 The single highest-value feature, because it's the only one unique to this extension
 and it is currently half-built. `background.js`'s `action.onClicked` handler already has
@@ -539,7 +590,15 @@ A highlight without a backlink is a clipboard. With one, it's a research tool �
 the actual job for the PM use case: pulling quotes out of specs, competitor pages and
 tickets, and still knowing a week later where each one came from.
 
-#### F2-1 · Capture source metadata
+> All five tasks landed on the `f2-f5-relaunch` branch together with F3–F5. Verified in
+> real Chromium (browser harness, §2.3): a toolbar capture stores url/title/fragment and
+> appears live in an open new tab with its chip; clicking the chip for a sentence 80
+> paragraphs down opens the page scrolled to it; right-click captures of a selection, a
+> link and an image each land correctly sourced; the "under last edited" target nests the
+> capture. The toolbar button itself can't be clicked from Playwright — the harness
+> invokes the same listener from the service worker.
+
+#### F2-1 · Capture source metadata ✅ done
 **Files:** `background.js`
 Extend the `action.onClicked` handler to store, alongside the text:
 ```js
@@ -559,7 +618,16 @@ carry `source` through that same already-narrowed path, not fix the empty-note i
 again.
 **Done when:** a highlight saved from any normal page carries a resolvable url and title.
 
-#### F2-2 · Render the source chip
+Landed. `source` also carries `kind: 'selection' | 'link' | 'image'` (and `targetUrl` for
+the latter two, F2-5). `favIconUrl` is dropped when it's a `data:` url or over 500 chars —
+some sites inline multi-KB favicons, enough to push a note past the 8 KB sync item cap;
+the chip draws favicons from Chrome's cache anyway (F2-2). The selection is now read from
+**all frames** (top frame preferred), so text selected inside a same-origin iframe is
+captured too, and it's trimmed. An empty capture saves nothing and shows a grey `–`
+badge instead of the old green `+`, so "nothing was selected" no longer looks like
+success.
+
+#### F2-2 · Render the source chip ✅ done
 **Files:** `todos.js`, `css/style.css`
 Under a captured note, a small line: favicon + site name + relative time
 ("stripe.com · 2h ago"). Clicking it opens the url in a new tab. Typed notes show
@@ -567,7 +635,14 @@ nothing — the chip must not add visual weight to the 90% of notes that are jus
 **Done when:** captured and typed notes are visually distinguishable at a glance and the
 chip is clickable.
 
-#### F2-3 · Scroll back to the exact highlight
+Landed as a plain `<a target="_blank" rel="noopener noreferrer">` (a real link click is
+the user activation text fragments need). The favicon comes from Chrome's `_favicon`
+endpoint (`favicon` permission) — no request to the site. Where it points is
+`Store.sourceHref()`, shared with the Markdown export: link/image captures open what was
+captured, selections open the page with the fragment, and any url that isn't
+`http(s)`/`file`/`ftp` (e.g. an imported `javascript:`) gets no link at all.
+
+#### F2-3 · Scroll back to the exact highlight ✅ done
 **Files:** `background.js`
 Build a [text fragment](https://developer.mozilla.org/en-US/docs/Web/URI/Fragment/Text_fragments)
 url — `<url>#:~:text=<encoded prefix>,<encoded suffix>` — so clicking the chip scrolls to
@@ -581,14 +656,30 @@ and highlights the original selection.
 **Done when:** capturing a mid-article sentence and clicking the chip lands on that
 sentence, highlighted.
 
-#### F2-4 · Choose where a capture lands
+Landed. Stored as the directive only (`source.textFragment = "text=start,end"`);
+`Store.sourceHref()` joins it to the url (`#:~:` or `:~:` if the url already has a hash,
+replacing any fragment directive the url was captured with). Selections of ≤12 words on
+one line use the whole text; otherwise `textStart` is the first 6 words of the first line
+and `textEnd` the last 6 of the last line — each term is kept within a single line because
+a fragment term can't span block elements. The "`prefix`/`suffix`" wording above meant
+start/end: the `prefix-,` / `,-suffix` context terms aren't used.
+
+#### F2-4 · Choose where a capture lands ✅ done
 **Files:** `background.js`, `js/store.js`
 Today every capture appends to the end of the top level. Add a target: append to the
 current notebook (F5), or as a child of the most recently edited note. Store the target
 as a user preference; default to "end of current notebook" to preserve today's behaviour.
 **Done when:** a preference exists and both modes work.
 
-#### F2-5 · Right-click capture
+Landed as `Store.captureNote()` plus `prefs.captureTarget` (`'end'` | `'lastEdited'`),
+set from the ⋯ menu. "Most recently edited" is `last_edited_note_id`, written by
+`Store.updateNote` only when a note's text actually changes — captures don't set it, so
+consecutive captures don't nest under each other. Falls back to "end" when that note is
+gone, archived, at the depth cap, or (for an F5-2 submenu pick) in a different notebook.
+A collapsed target is expanded so the capture is visible. Prefs are device-local (not
+synced).
+
+#### F2-5 · Right-click capture ✅ done
 **Files:** `manifest.json`, `background.js`
 Add the `contextMenus` permission and a "Save to Todos" item that appears on selection,
 link and image contexts. Reuses the F2-1 capture path. For links, save the link text and
@@ -596,27 +687,49 @@ target; for images, save the image url.
 **Done when:** the context menu item appears in all three contexts and writes a correctly
 sourced note.
 
+Landed. Link text and image alt text aren't in the `contextMenus` event, so they're read
+with a one-off `executeScript` in the clicked frame (activeTab covers it); cross-origin
+frames fall back to the url / file name. A right-click on an image inside a link saves
+the image. For a selection, the page's own `getSelection()` (which keeps line breaks) is
+used only if it matches `info.selectionText` after collapsing whitespace; otherwise
+`info.selectionText`. `data:` image urls aren't stored (size). `%s` in a notebook name is
+defused in menu titles (Chrome substitutes the selection there).
+
 ---
 
-## 6. Phase 3 — Real todo semantics (F3)
+## 6. Phase 3 — Real todo semantics (F3) ✅ done
+
+> Verified: store harness (cascade is exactly one `storage.local.set`, reopen doesn't
+> revive children, reload persistence, tree pruning timings) and browser harness (clicking
+> a checkbox while typing in another line keeps focus, text and caret; derived/partial
+> states; collapse survives reload; hide-done; archive → archive view → restore).
 
 It is called **Todos** and nothing can be completed. Deleting is currently the only way
 to finish something, which means the tool punishes you for using it.
 
-#### F3-1 · Completion state
+#### F3-1 · Completion state ✅ done
 **Files:** `todos.js`, `css/style.css`, `js/store.js` (`done` already in the model)
 A checkbox per line; strikethrough and dim when done. Clicking must not steal the caret
 from an in-progress edit.
 **Done when:** completion round-trips through storage and survives a reload.
 
-#### F3-2 · Cascading completion
+Landed. The checkbox (and the disclosure triangle) `preventDefault` on `mousedown`, so
+focus never leaves the line being edited; the re-render after a toggle restores that
+line's live text and caret (§4.3).
+
+#### F3-2 · Cascading completion ✅ done
 **Files:** `todos.js`
 Completing a parent completes its subtree. Uncompleting a parent does **not** revive
 children (that's the behaviour people expect and the one that avoids surprising
 resurrection). A parent whose children are all done shows an indeterminate → done state.
 **Done when:** the cascade is one storage transaction, not N writes.
 
-#### F3-3 · Collapsible nodes
+Landed as `Store.setDone(id, done)` — one `persist()`, so one `storage.local.set` for the
+whole subtree (asserted by counting writes). Four visual states: **done** (filled ✓),
+**derived** (hollow ✓ — every child done, the parent itself not yet; one click completes
+it), **partial** (– some progress below), **open**. Archived children don't count.
+
+#### F3-3 · Collapsible nodes ✅ done
 **Files:** `todos.js`, `css/style.css`
 `collapsed` is already in the model. A disclosure triangle on any note with children;
 collapsed state persists. This is the fix for "long lists are a scroll graveyard" and it
@@ -624,21 +737,41 @@ matters more once F1-6 removes the depth cap.
 **Done when:** collapse state survives reload and a collapsed parent hides its whole
 subtree.
 
-#### F3-4 · Hide completed / archive
+Landed. `collapsed` syncs (it's a note field). Adding a subtask to a collapsed note
+expands it first. A palette jump into a collapsed branch expands its ancestors
+(`Store.expandAncestors`, one write).
+
+#### F3-4 · Hide completed / archive ✅ done
 **Files:** `todos.js`, `js/store.js`
 A toggle to hide done notes. Separately, an archive: moving a note to the archive keeps
 it out of the main view and out of the sync mirror's priority set, but keeps it
 searchable (F4) and exportable (F5).
 **Done when:** a list with 200 completed notes renders as fast as an empty one.
 
+Landed. **Hide done** is a toolbar toggle persisted as `prefs.hideDone` (device-local).
+**Archive** is a new `archived` note field (additive, no schema bump): a hover "archive"
+button on each row; the toolbar **Archive** button switches the page to a read-only view
+of the notebook's archived subtrees, each with **restore**. Archiving a note hides its
+whole subtree. `Store.getTree(nb, {view, hideDone, revealId})` prunes hidden subtrees
+without walking them — 400 done notes (200 parents + children) build in ~0.08 ms. For
+sync, archived notes (or notes under an archived ancestor) are evicted before any live
+note, and an archived note can only take a slot from another archived note — otherwise
+it stays local-only.
+
 ---
 
-## 7. Phase 4 — Search and command palette (F4)
+## 7. Phase 4 — Search and command palette (F4) ✅ done
 
 There is currently **no way to find anything.** After F1 and F2 land there will be
 hundreds of captures, and the full-window list stops being an asset.
 
-#### F4-1 · The palette
+> Verified: store harness (every filter alone and combined, archived coverage, source
+> title/url matching, tag boundary rules, timing) and browser harness (Cmd/Ctrl+K from
+> inside a note inserts nothing; filter → Enter focuses the note; Esc restores focus and
+> caret; `is:done`, `#tag`, an unknown filter; clicking a tag; `site:` → Enter switches
+> notebook).
+
+#### F4-1 · The palette ✅ done
 **Files:** new `js/palette.js`, `todos.js`, `css/style.css`
 `Cmd/Ctrl+K` opens an overlay. Type to filter; ↑/↓ to move; Enter to jump to and focus
 the note; Esc to close. Must not fight the `contenteditable` — bind on the document in
@@ -646,7 +779,16 @@ the capture phase and check that the palette isn't already open.
 **Done when:** the palette opens, filters, and jumps, without ever inserting a stray
 character into a note.
 
-#### F4-2 · Search index
+Landed. The keydown listener is on `document` in the capture phase and
+`stopImmediatePropagation`s the shortcut; while open, focus is in the palette's own
+`<input>`. Cmd/Ctrl+K while open re-selects the query. An empty query lists the most
+recently edited notes. Each result shows notebook › ancestor path · site · done/archived.
+A jump switches notebook (and to the archive view for archived notes), expands collapsed
+ancestors, keeps a done note visible even with **Hide done** on (`revealId`, until the
+view changes), scrolls, flashes the row and puts the caret at its end. There's also a
+**Search ⌘K** button in the toolbar, for discoverability.
+
+#### F4-2 · Search index ✅ done
 **Files:** `js/store.js`
 Substring match over `text` is enough to start — do not add a fuzzy-search dependency
 before it's shown to be needed (and note that the CSP forbids remote scripts, so any
@@ -654,27 +796,50 @@ library must be vendored into the repo). Search should cover archived notes, and
 against `source.title` and `source.url` too.
 **Done when:** search over 1,000 notes returns in well under a frame.
 
-#### F4-3 · Filters
+Landed as a linear scan of the in-memory cache, no index: **~0.7 ms per query over 1,000
+notes** (Node, harness). Every whitespace-separated term must match (AND), against text,
+`source.title`, `source.url` and `source.targetUrl`. Blank notes are skipped. Results are
+newest-first, capped at 50, with `.total` for "50 of 312". `Store.search` still accepts a
+plain string.
+
+#### F4-3 · Filters ✅ done
 **Files:** `js/palette.js`
 Prefix filters in the palette input: `is:done`, `is:open`, `is:captured`,
 `site:stripe.com`, `after:2026-01-01`. Combinable with free text.
 **Done when:** each filter works alone and in combination.
 
-#### F4-4 · Inline tags
+Landed, plus `is:typed`, `is:archived` and `before:`. `site:` matches the host or any
+subdomain (`site:stripe.com` finds `docs.stripe.com`, not `tripe.com`) of the page *or*
+the captured link/image. `after:`/`before:` compare `createdAt` against local midnight of
+the date (Gmail semantics: `after:` includes that day). An unrecognised filter
+(`is:bogus`, `after:2026-02-31`) is shown in the hint line rather than silently matching
+everything.
+
+#### F4-4 · Inline tags ✅ done
 **Files:** `todos.js`, `js/store.js`
 Parse `#tag` out of note text on save into the cached `tags` array; render them as
 chips inline; clicking one opens the palette filtered to it. Cheap to build and it's the
 organisational layer people actually use — do it before considering folders.
 **Done when:** typing `#spec` in a note makes it findable by `#spec`.
 
+Landed. The tag rule changed: `#` must start the text or follow whitespace, so a pasted
+`page#section` url or "C#" isn't a tag (tags on existing notes refresh the next time
+their text is edited). `Store.splitTags()` applies the same rule for rendering, so what's
+highlighted is exactly what's indexed. Tags are styled spans inside the
+`contenteditable` — `innerText` is unchanged, so editing is unaffected; the DOM is only
+rebuilt on blur when the tags actually changed, so the caret isn't disturbed. Clicking a
+tag on a line you're **not** editing opens the palette with `#tag`; on the line you're
+editing it just places the caret. In the palette, `#sp` prefix-matches `#spec` as you
+type.
+
 ---
 
-## 8. Phase 5 — Notebooks and portability (F5)
+## 8. Phase 5 — Notebooks and portability (F5) ✅ done
 
 Two halves of the same data-model work. One flat global list stops scaling right after
 the size limit does.
 
-#### F5-1 · Multiple notebooks
+#### F5-1 · Multiple notebooks ✅ done
 **Files:** `todos.js`, `js/store.js`, `css/style.css`
 Tabs across the top of the new tab page: Work / Personal / Meeting notes. Create, rename,
 reorder, delete (with confirmation — deleting a notebook deletes its notes). The active
@@ -683,24 +848,73 @@ is `["nb_default"]` until now.
 **Done when:** notes never leak between notebooks and the active notebook survives a
 browser restart.
 
-#### F5-2 · Capture into a chosen notebook
+Landed. UI: click a tab to switch, **+** to create (opens straight into inline rename),
+double-click to rename (Enter commits, Esc cancels), drag to reorder, hover **×** to
+delete (a `confirm()` with the note count; hidden when it's the last notebook — the
+store refuses that too). Store: `createNotebook`, `renameNotebook`, `reorderNotebooks`,
+`deleteNotebook`, `countNotes`, `get/setActiveNotebookId`.
+
+**Notebooks now sync** — needed for "across devices", and without it a note created in a
+new notebook was silently dropped on every other device (`adoptRemoteAsNewLocalNote` had
+nowhere to attach it). All notebook metadata travels in one item, `s:nbs`: per-notebook
+name (LWW on a new `nameUpdatedAt`), order (LWW on `orderUpdatedAt`), active notebook
+(LWW on `activeUpdatedAt`), and **tombstones** for deletes, kept in
+`notebooks_meta.tombstones` locally (bounded: 90 days, 100 entries). Unlike notes, a
+notebook delete therefore *does* propagate — deleting it (and its notes) on every
+device — but only where the local notebook was created before the delete, so a fresh
+install's `nb_default` survives an old delete of it (the one wart: that brings an empty
+"Notes" tab back to the other devices). Remote notes whose notebook hasn't arrived yet
+are parked and adopted when it does, rather than dropped. The active notebook is synced
+per the spec above, so switching notebook on one device changes where new tabs open on
+the others; open tabs don't jump.
+
+#### F5-2 · Capture into a chosen notebook ✅ done
 **Files:** `background.js`, `manifest.json`
 Extend the F2-5 context menu with a "Save to Todos ▸" submenu listing notebooks. Rebuild
 the menu on notebook change.
 **Done when:** the submenu reflects the current notebook list.
 
-#### F5-3 · Markdown export
+Landed. With one notebook it's a single "Save to Todos" item; with more, a submenu of
+them all. Rebuilt (debounced, skipped if the id/name list is unchanged) on
+install/startup and via `Store.onNotebooksChanged`, which registers its
+`storage.onChanged` listener **synchronously** so that calling it at the service
+worker's top level lets a notebook change made in a tab (or arriving from sync) wake the
+worker. Browser harness: the recorded `contextMenus.create` calls go from one item to
+"Save to Todos › Work, Notes" after a notebook is added and reordered.
+
+#### F5-3 · Markdown export ✅ done
 **Files:** `js/store.js`, `todos.js`
 Nesting maps cleanly onto `-` indentation; `done` onto `- [x]`; a source onto a trailing
 `([title](url))`. Export the active notebook or all of them. Download via a blob url.
 **Done when:** exported Markdown renders correctly on GitHub with structure intact.
 
-#### F5-4 · JSON export / import
+Landed in the ⋯ menu (*Markdown — this notebook / all notebooks*). Each notebook is a
+`# Name` section; archived subtrees follow under `## Archived`; collapsed and done notes
+are included regardless of the view; blank leaf lines are skipped. Two-space indentation
+per level (the content column of `- `), GitHub task-list syntax, multi-line notes as
+CommonMark hard breaks within one item, the link as `[title](<url>)` (angle brackets so
+urls with parentheses survive; the url is the chip's — with text fragment), `<` escaped.
+**Checked against the CommonMark structure, not by rendering it on GitHub.**
+
+#### F5-4 · JSON export / import ✅ done
 **Files:** `js/store.js`, `todos.js`
 Full-fidelity round-trip including ids, timestamps, sources and archive state. Import
 should offer merge or replace, and must validate `schema_version` before touching
 anything.
 **Done when:** export → clear storage → import reproduces the exact tree.
+
+Landed in the ⋯ menu (*JSON backup — everything*, *Import JSON backup…*). Import parses
+and validates the whole file first (`schema_version`, item shapes, id format) — a bad
+file changes nothing — then asks **Merge** (union; where an id exists on both sides the
+newer `updatedAt` wins) or **Replace everything**. Either way the result is repaired to
+the §4.1 invariants (orphans to root, cycles broken, depth capped, children/rootOrder
+rebuilt from `parentId`) and written in one `persist()`. Replace tombstones notebooks
+that aren't in the file, so it reaches synced devices; notes in notebooks that survive
+are subject to the open note-delete issue in §4.3. Timestamps are kept exactly as
+exported, so on a synced setup a note edited elsewhere *after* the backup still wins.
+Verified end to end in the browser: export → `storage.local.clear()` +
+`storage.sync.clear()` → reload → import (Replace) via the UI reproduces the exported
+data exactly (deep-equal), with `validateTree()` clean.
 
 > **Why this ships rather than sitting at the bottom of the list:** this extension was
 > pulled from the Web Store and has historically lost notes silently. A visible "your
@@ -729,10 +943,14 @@ Recording these so they don't get relitigated:
 ## 10. Suggested order
 
 ```
-P0 ✅ ──►  F1 ✅ ──┬──►  F2  ──►  F5
-                   ├──►  F3
-                   └──►  F4
+P0 ✅ ──►  F1 ✅ ──┬──►  F2 ✅ ──►  F5 ✅
+                   ├──►  F3 ✅
+                   └──►  F4 ✅
 ```
+
+**All five phases are done.** What's next is the open item in §4.3 (note-delete
+tombstones), a real-Chrome pass on two signed-in profiles (the one thing no harness here
+covers — cross-device sync has only run against the stub), then §11.
 
 Phase 0 came first because you cannot trust test results until the delete and subtask
 buttons are known-good. Phase 1 came before the rest because F2–F5 each need per-note
@@ -754,9 +972,15 @@ Wanted, but not in the top five. Listed so they aren't lost.
 - Drag-to-reorder (see Non-goals; F1-6 landed, so `Store.moveNote` is available — this is
   now unblocked, just not scheduled)
 - Daily-notes mode — an auto-dated notebook per day
-- Themes and a configurable background (currently hardcoded to `images/black.jpg` at
-  `todos.js:33`)
+- Themes and a configurable background (currently hardcoded to `images/black.jpg` near
+  the top of `todos.js`)
 - Keyboard-only tree navigation (Tab/Shift-Tab to indent, Alt+↑/↓ to move)
 - Reminders / due dates — needs the `alarms` permission and a notification story
 - Undo (`Cmd+Z`) across structural operations, which the current model cannot support
   and the F1 model can
+- **Known limitation: typing faster than Enter.** Enter awaits two `storage.local`
+  writes before moving focus to the new line; a key pressed within those few
+  milliseconds lands at the end of the *previous* line (nothing is lost, just misplaced).
+  Unreachable at human typing speed, reachable by automation — the browser harness types
+  with a 25 ms per-key delay for this reason. Fix: insert and focus the row
+  synchronously, and attach the Store id when `createNote` resolves.
