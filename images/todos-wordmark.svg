@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 32 262 96" role="img" aria-label="Todos">
+  <!-- Product wordmark, drawn in the Filter Coffee Way palette so the app and
+       its publisher read as one family: cream wordmark, gold accent, brown
+       mark, all on the dark page. The mark is a checkbox with a steam curl,
+       which is the whole product in one glyph (a todo, brewed).
+       Note viewBox casing: the brand source SVGs spell it "viewbox", which an
+       img element parses as XML and ignores, rendering the art clipped. -->
+  <!-- steam -->
+  <path d="M 36 58 Q 31 50 36 42" fill="none" opacity="0.45" stroke="#C49A3C" stroke-linecap="round" stroke-width="3"/>
+  <path d="M 51 56 Q 46 47 51 38" fill="none" opacity="0.45" stroke="#C49A3C" stroke-linecap="round" stroke-width="3"/>
+  <path d="M 66 58 Q 61 50 66 42" fill="none" opacity="0.45" stroke="#C49A3C" stroke-linecap="round" stroke-width="3"/>
+  <!-- checkbox -->
+  <rect x="22" y="62" width="58" height="58" rx="11" fill="none" stroke="#8B5E3C" stroke-width="5"/>
+  <path d="M 36 92 L 48 104 L 68 77" fill="none" stroke="#C49A3C" stroke-linecap="round" stroke-linejoin="round" stroke-width="7"/>
+  <!-- divider + wordmark -->
+  <line x1="106" x2="106" y1="44" y2="122" stroke="#5C3317" stroke-width="1"/>
+  <text x="124" y="98" fill="#FAF3E8" font-family="Georgia, 'Times New Roman', serif" font-size="46" letter-spacing="1">Todos</text>
+  <line x1="124" x2="272" y1="112" y2="112" stroke="#C49A3C" stroke-width="1"/>
+</svg>

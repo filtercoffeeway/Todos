@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Todos">
+  <!-- 16px cut. The steam and the hairline border both turn to noise at this
+       size, so they are dropped and the remaining strokes are thickened;
+       scaling icon.svg down instead gives sub-pixel strokes that grey out. -->
+  <rect width="128" height="128" rx="24" fill="#2C1A0E"/>
+  <rect x="22" y="22" width="84" height="84" rx="16" fill="none" stroke="#8B5E3C" stroke-width="12"/>
+  <path d="M 42 66 L 58 84 L 90 44" fill="none" stroke="#C49A3C" stroke-linecap="round" stroke-linejoin="round" stroke-width="14"/>
+</svg>

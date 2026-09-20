@@ -48,6 +48,33 @@ the note being moved, so moving a *subtree* can push its descendants past `MAX_D
 `indentRow` guards against this with `subtreeHeight()`; **any future caller (drag-to-
 reorder) needs the same guard, or the fix moved into the Store.**
 
+## Branding
+
+**The product is still called Todos.** Filter Coffee Way is the publisher, not the
+product; the byline in `todos.html` reads "by FilterCoffeeWay" where it used to say
+"by MadrasCoders". The name was reconsidered and deliberately kept.
+
+The visual identity is now drawn in the publisher's palette (`#2C1A0E` / `#5C3317` /
+`#8B5E3C` / cream `#FAF3E8` / gold `#C49A3C`, Georgia for display, Courier for captions),
+so app and publisher read as one family:
+
+| Asset | Role |
+|---|---|
+| `images/todos-wordmark.svg` | Masthead lockup: checkbox-with-steam mark, "Todos" in Georgia cream, gold rule. Replaces the old green pixel `images/todos.png`. |
+| `images/icon.svg` | Icon art for the 48 and 128 renders — same mark on a dark tile with a gold hairline. |
+| `images/icon-small.svg` | The 16px cut. Steam and hairline are dropped and strokes thickened; scaling `icon.svg` down instead gives sub-pixel strokes that grey out. |
+| `images/icon16/48/128.png` | Rendered from the two SVGs above by `/tmp/todos-harness/render-icons.js`. They used to be an unrelated orange pencil. |
+
+`images/todos.png` and `images/note.png` are now unreferenced, kept in case the Web Store
+listing still wants them.
+
+**Trap if you ever pull from the publisher's own assets** (`../FilterCoffeeWay/blog/brand/logo/`):
+every SVG there spells the attribute `viewbox`, not `viewBox`. Inline in HTML the parser
+case-corrects it, but through `<img src>` the file is parsed as XML where the attribute is
+case-sensitive — the viewBox is then absent and the art renders unscaled and clipped. The
+exported PNGs came from the broken SVGs, so `banner_dark.png` is clipped mid-wordmark.
+That is a bug in the brand source, not something worked around here.
+
 ## Testing
 
 Verified with two harnesses kept outside the repo (no npm here, by design — how to

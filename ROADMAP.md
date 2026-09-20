@@ -1051,7 +1051,33 @@ damage, and only one of them was the disclosure triangle:
   instead of two loose boxes; revealed on `:hover` *and* `:focus-within`, so they are
   reachable without a mouse.
 
-### 11.2 Scope limits
+### 11.2 Branding
+
+Two things changed; the name was not one of them. **The product is still Todos** — it was
+reconsidered against alternatives (`Dabara`, `Decoction`; `Dogear` and `Kaapi` were ruled
+out on collisions) and deliberately kept.
+
+- **Byline.** "by MadrasCoders" is now "by FilterCoffeeWay" — the publisher, not a rename.
+- **Identity.** The green pixel `ToDo'S` wordmark is replaced by
+  `images/todos-wordmark.svg`, and the toolbar icons (previously an unrelated orange
+  pencil) are regenerated from `images/icon.svg` / `images/icon-small.svg`. All of it is
+  drawn in the publisher's palette and type, so app and publisher read as one family.
+
+The icon ships as two cuts on purpose: at 16px the steam curls and the gold hairline turn
+to noise and the 7-unit strokes land below one pixel, so `icon-small.svg` drops both and
+thickens what is left. `/tmp/todos-harness/render-icons.js` rasterises both through
+Chromium at 16/48/128.
+
+Worth knowing before reusing the publisher's own files at
+`../FilterCoffeeWay/blog/brand/logo/`: **they all spell the attribute `viewbox`, not
+`viewBox`.** Inline in HTML the parser case-corrects that; through `<img src>` the file is
+parsed as XML, the attribute is case-sensitive, and the viewBox is therefore missing — the
+art renders at its literal `width`/`height` (400x400) inside a 760x140 coordinate space
+and is clipped. The exported PNGs came from the broken SVGs, so `banner_dark.png` is
+clipped mid-wordmark too. Also: the banner's mono tagline does not survive scaling down —
+at 13 units in a 760-wide viewBox it lands near 6px at any header size.
+
+### 11.3 Scope limits
 
 - `previousSiblingRow()` deliberately reads the DOM, so under "hide done" `Tab` nests
   under the sibling you can *see*, which may not be the sibling the Store has directly

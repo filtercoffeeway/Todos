@@ -1,3 +1,22 @@
+/* Masthead: product wordmark, publisher byline under it. Both sit on the
+   same 50px rule as the notebook tabs and the first note column. */
+.masthead {
+	margin: 14px 0 18px 50px;
+	color: rgba(253, 253, 253, 0.42);
+	/* The brand sets its small caption type in Courier; matching it is what
+	   ties the byline to the publisher rather than to this app's own UI. */
+	font: 12px 'Courier New', Courier, monospace;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
+.masthead .wordmark {
+	display: block;
+	height: 56px;
+	width: auto;
+	margin-bottom: 6px;
+}
+
 html {
 	-webkit-background-size: cover;
 	-moz-background-size: cover;
