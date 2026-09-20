@@ -18,13 +18,22 @@ A Chrome extension that lets you capture to-dos directly from any webpage by hig
 | Save the highlighted text | `Ctrl + Q` | `Cmd + E` |
 | Search notes (on the new tab page) | `Ctrl + K` | `Cmd + K` |
 
+On the new tab page, while editing a note:
+
+| Action | Keys |
+|--------|------|
+| New note below | `Enter` |
+| Make it a subtask of the note above | `Tab` |
+| Move it back out one level | `Shift + Tab` |
+| Delete an empty note | `Backspace` |
+
 ## Features
 
 - **Highlight to capture** — no copy-paste, no switching tabs, just highlight and save. Or right-click a selection, link or image → *Save to Todos*.
 - **Know where it came from** — captured notes show the site and when (`stripe.com · 2h ago`); click to reopen the page scrolled to the exact passage.
 - **New tab override** — every new tab shows your to-do list as a constant reminder
 - **Real to-dos** — check things off (completing a task completes its subtasks), collapse long branches, hide what's done, archive what you want out of the way but still searchable.
-- **Nested tasks** — subtasks up to six levels deep.
+- **Nested tasks** — subtasks up to six levels deep. `Tab` and `Shift + Tab` nest and un-nest as you type; no buttons to hunt for.
 - **Search everything** — `Cmd/Ctrl + K`, with filters: `is:done`, `is:open`, `is:captured`, `site:example.com`, `after:2026-01-01`, and `#tags` you type into notes.
 - **Notebooks** — separate tabs for Work, Personal, Meeting notes…; right-click capture can target any of them.
 - **Your data is yours** — export a notebook (or all of them) as Markdown, or everything as a JSON backup you can import again.

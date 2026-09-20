@@ -47,7 +47,7 @@ Seven files matter.
 | `background.js` | Service worker. Toolbar/shortcut capture (`action.onClicked`) and right-click capture (`contextMenus.onClicked`), both saving through `Store.captureNote` with a source (url, title, text fragment). Keeps the context menu's notebook submenu in step via `Store.onNotebooksChanged`. Writes the welcome note on install. |
 | `todos.html` | The new tab page. A clock, a logo, the notebook tabs + toolbar (search, hide done, archive, ⋯ menu), and one `<div class="input" id="data">` that holds the current notebook's notes. |
 | `todos.js` | Renders `Store.getTree()` into DOM (checkbox, disclosure triangle, `#tag` highlighting, source chip per row), handles editing, notebook tabs, the toolbar/menu, export/import, and palette jumps. All inside one `window.onload` closure with no exports. |
-| `css/style.css` | Indentation is depth-driven: one `.note` rule reading a `--depth` custom property set per row, not per-level classes. Rows are flex: controls on the first line, text wraps beside them. |
+| `css/style.css` | Indentation is depth-driven: one `.note` rule reading a `--depth` custom property set per row, not per-level classes. Rows are flex: controls on the first line, text wraps beside them. F6 rewrote the gutter — indentation is padding (not margin) so the ancestor guide lines can paint through it, and row chrome is hover-revealed. |
 
 ### 2.1 The pre-F1 data model (historical; the migration in F1-2 depends on this)
 
@@ -170,7 +170,36 @@ hairy:
   `host_permissions: ["<all_urls>"]` (Playwright can't click the toolbar button to grant
   `activeTab`) and a prelude in `background.js` that records the `action`/`contextMenus`
   listeners and `contextMenus.create` calls so the test can invoke captures from the
-  service worker. Type with a ~25 ms per-key delay — see the known limitation in §11.
+  service worker. Type with a ~25 ms per-key delay — see the known limitation in §12.
+
+  Two things about it that cost real time to rediscover. Its `prepareExtension()`
+  **rebuilds the unpacked copy from the repo working tree on every run**, so editing
+  that copy by hand does nothing and there is no need to sync files into it. And to run
+  the suite against a *different* revision — the way to tell a pre-existing failure from
+  one you just introduced — point its `REPO` constant at a pristine checkout
+  (`git archive HEAD | tar -x -C /tmp/todos-baseline-repo`) and give that copy its own
+  `EXT`/`SHOTS` paths. Never run two copies at once: they share those paths and the log,
+  and the results interleave into nonsense.
+
+**Driving branded Google Chrome (as opposed to Playwright's bundled Chromium).** As of
+Chrome 153 there is no fully automated way to load this extension unpacked:
+
+- `--load-extension` is ignored outright (disabled back in 137).
+- `--disable-features=DisableLoadExtensionCommandLineSwitch`, the escape hatch that
+  worked for a while after 137, no longer does.
+- CDP `Extensions.loadUnpacked` (**browser**-level session — on a page session the method
+  does not exist at all) returns the computed extension id but installs nothing, with or
+  without `--enable-unsafe-extension-debugging`, and with Developer mode already on.
+
+What does work: launch Chrome with `--remote-debugging-port` and a throwaway
+`--user-data-dir`, attach with `chromium.connectOverCDP`, turn Developer mode on by
+clicking `extensions-manager` → `extensions-toolbar` → `#devMode` through the shadow
+roots, then **load the folder by hand once** via "Load unpacked" (the picker is a native
+dialog, so that click cannot be scripted) and poll `chrome://extensions` until the item
+appears. `/tmp/todos-harness/chrome-attach.js` does all of that and then runs the
+branded-Chrome checks — `plaintext-only`, `:has()`, hover reveal, the guide-line
+backgrounds and the Tab/Shift+Tab keyboard path. Always a temp profile: the real one
+holds real notes.
 
 ---
 
@@ -950,7 +979,8 @@ P0 ✅ ──►  F1 ✅ ──┬──►  F2 ✅ ──►  F5 ✅
 
 **All five phases are done.** What's next is the open item in §4.3 (note-delete
 tombstones), a real-Chrome pass on two signed-in profiles (the one thing no harness here
-covers — cross-device sync has only run against the stub), then §11.
+covers — cross-device sync has only run against the stub), then §12. Phase 6 (§11,
+layout and tree UX) landed after all five.
 
 Phase 0 came first because you cannot trust test results until the delete and subtask
 buttons are known-good. Phase 1 came before the rest because F2–F5 each need per-note
@@ -964,7 +994,77 @@ worth having).
 
 ---
 
-## 11. Deferred / not scheduled
+## 11. Phase 6 — Layout and tree UX (F6) ✅ done
+
+The tree *worked* after F1–F5 but did not *read* as one. Three things were doing the
+damage, and only one of them was the disclosure triangle:
+
+1. **The gutter was a toolbar.** Every row, at every depth, rendered a red `remove.png`
+   and a green `subtask.png` — the most saturated pixels on a page whose whole point is
+   the text. 164px of controls before the first character (30 + 60 + 34 + 40), on top of
+   a 70px left margin.
+2. **The green ↳ was a glyph pretending to be structure.** Shaped like an indent marker,
+   wired to "add subtask". It existed only because there was no keyboard way to nest.
+3. **The triangle sat in the wrong column** — between the subtask button and the
+   checkbox, inside a run of controls rather than attached to the row it collapses — and
+   reserved its 34px on every row forever, including the majority with no children.
+
+### 11.1 What changed
+
+- **`Tab` / `Shift+Tab` indent and outdent** (`indentRow` / `outdentRow` in `todos.js`),
+  and the two `<img>` buttons are gone from the DOM; `images/remove.png` and
+  `images/subtask.png` are deleted. Delete is now a hover action (plus Backspace on an
+  empty line, unchanged). `insertChild()` went with the button that was its only caller.
+- **`indentRow` measures the whole subtree before moving.** `Store.moveNote` validates
+  only the depth of the note being moved, so indenting a two-level subtree to depth 5
+  would have pushed its descendants past `MAX_DEPTH` unchecked. `subtreeHeight()` reads
+  the Store (not the DOM) so children hidden by collapse or "hide done" still count.
+  **The same hole is still open for any future caller of `moveNote` — drag-to-reorder
+  will need this check too, and the right long-term fix is to move it into the Store.**
+- **`outdentRow` now saves the row's live text first.** It used to be reachable only via
+  Backspace-on-an-empty-line, where there was nothing to lose; `Shift+Tab` fires
+  mid-line, and the `render()` that follows rebuilds the row from storage.
+- **Disclosure triangle: hover-revealed, and only where it means something.** It still
+  reserves its column (text has to line up), but shows on `:hover` / `:focus-within`.
+  A *collapsed* row keeps it up permanently and adds a `.subcount` pill with the number
+  of hidden children — collapsing hides data, so it cannot be a hover-only state.
+- **Ancestor guide lines.** Each row paints one 1px line per level above it via a
+  `repeating-linear-gradient` whose background box is exactly `--depth` tiles wide (so
+  depth 0 paints nothing). The DOM is a flat list of siblings, not a nested tree, so the
+  lines are per-row segments that meet — which is why row spacing had to move from
+  `margin` to `padding`. It is also why `@keyframes flash` had to stop using the
+  `background` shorthand: it was wiping `background-image` for the length of the
+  animation.
+- **Type scale.** Body text 30px → 22px, indent 90px → 30px, left gutter 70px → 50px
+  (which lines the first column up with the notebook tabs). Six levels now fit on screen;
+  at the old numbers depth 3 started a third of the way across the window.
+- **`.input` capped at 1080px.** The full-window canvas is the product (§1) but the
+  *text column* is not: an uncapped 1400px row is ~100 characters at 22px, and it also
+  flung the row actions a screen's width from the note they belong to.
+- **`.note-body` forwards its own clicks to the text.** Putting the count beside the
+  text made `.note-text` a flex item, so it now stops at the end of its content instead
+  of filling the row — which quietly broke two things: clicking the empty space beside a
+  note no longer put the caret in it, and an *empty* note became a zero-width box with
+  nothing to click at all. Fixed with a `min-width` on the text plus a `mousedown`
+  handler on the body. Worth remembering if the body's layout is ever changed again.
+- **Row actions grouped.** `archive` and `delete` live in one `.row-actions` container
+  instead of two loose boxes; revealed on `:hover` *and* `:focus-within`, so they are
+  reachable without a mouse.
+
+### 11.2 Scope limits
+
+- `previousSiblingRow()` deliberately reads the DOM, so under "hide done" `Tab` nests
+  under the sibling you can *see*, which may not be the sibling the Store has directly
+  above. That is the intended reading of the gesture, not an oversight.
+- `Tab` on a first child is a silent no-op (nothing to nest under), matching Workflowy.
+  There is no "indent past your parent" behaviour.
+- `.row-actions:has(...)` is used for the archive view's always-visible restore button.
+  Chrome 105+; fine for MV3, would need rework if this ever had to run elsewhere.
+- Alt+↑/↓ to reorder siblings is still unbuilt (§12).
+
+---
+
+## 12. Deferred / not scheduled
 
 Wanted, but not in the top five. Listed so they aren't lost.
 
@@ -974,7 +1074,8 @@ Wanted, but not in the top five. Listed so they aren't lost.
 - Daily-notes mode — an auto-dated notebook per day
 - Themes and a configurable background (currently hardcoded to `images/black.jpg` near
   the top of `todos.js`)
-- Keyboard-only tree navigation (Tab/Shift-Tab to indent, Alt+↑/↓ to move)
+- Keyboard-only tree navigation — Tab/Shift+Tab landed in F6 (§11); Alt+↑/↓ to move a
+  row up or down among its siblings is still open
 - Reminders / due dates — needs the `alarms` permission and a notification story
 - Undo (`Cmd+Z`) across structural operations, which the current model cannot support
   and the F1 model can
