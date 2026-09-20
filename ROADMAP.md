@@ -427,12 +427,10 @@ behaviour is once-per-call, this budget can grow substantially — it's delibera
 conservative, not tuned.
 
 Landed as specified, with these scope calls (all worth knowing before building on this):
-- **No tombstones.** A note disappearing from another device's `s:<id>` mirror entry
-  could mean it was deleted there, or just evicted from *that device's* budget — the
-  protocol can't tell the two apart, so **deletions do not propagate across devices**
-  via sync in this pass. (Deleting a note still removes it, and its own mirror slot,
-  wherever the delete happened.) A real fix needs a tombstone/deleted-marker scheme;
-  not designed here.
+- ~~**No tombstones.**~~ *Fixed — see §4.4.* A note disappearing from another device's
+  `s:<id>` mirror entry could mean it was deleted there or just evicted from *that
+  device's* budget, and the protocol can't tell the two apart, so absence still never
+  deletes anything. Deletes are explicit tombstones now.
 - **Sibling order isn't synced.** Only `parentId` mirrors per note (`children`/
   `rootOrder` don't); tree *membership* converges across devices, exact order within a
   level may not. F5's notebook work is the more natural place to revisit ordering sync.
@@ -600,11 +598,57 @@ test that fails against the pre-fix code:
 - **Concurrent cross-device moves could form a cycle** (A under B here, B under A there);
   `applyRemoteFieldsToLocal` now lands the note at root instead.
 
-**Still open, not fixed here: deletes can be resurrected.** Beyond "deletions don't
-propagate" (F1-3), a device that still has a deleted note locally re-pushes it at its next
-`bootstrapSync` (it's "not in the mirror"), and the deleting device then re-adopts it.
-Notebook deletes are safe (F5-1 tombstones); note deletes need per-note tombstones — a
-bounded `s:tomb` item (id → deletedAt, pruned) would fit in one 8 KB sync item.
+**Deletes could be resurrected — fixed, see §4.4.** A device that still had a deleted note
+re-pushed it at its next `bootstrapSync` (it was "not in the mirror") and the deleting
+device re-adopted it.
+
+### 4.4 Note-delete tombstones ✅ done
+
+`Store.deleteNote` (and a JSON *Replace* import) record `{noteId: deletedAt}` in
+`chrome.storage.local` under `note_tombstones`, mirrored as **one sync item, `tomb:notes`**
+(`{tombstones, _dev}`). The key is deliberately **not** `s:tomb` as first sketched: a
+version from before this treats every `s:` key except `s:meta`/`s:nbs` as a note and would
+have adopted it as a note with id "tomb".
+
+- **A tombstone is a claim about a moment, not about the id.** It covers a note whose
+  `updatedAt <= deletedAt`; an edit made anywhere *after* the delete beats it. That means
+  there is nothing to un-tombstone and no resurrection rule to reason about separately —
+  it's the same last-write-wins as everywhere else.
+- **On receiving tombstones** (`mergeRemoteNoteTombstones`, before that batch's notes are
+  merged): every covered local note is deleted in one `persist()`. A child edited after
+  its parent's delete survives and lands at root — no push, since every device derives
+  the same result from the same tombstone.
+- **On receiving a note** (`mergeRemoteNote`): a note we don't have, whose id is tombstoned
+  at or after its `updatedAt`, is not adopted, and its stale `s:<id>` is queued for removal
+  from the mirror.
+- **Bootstrap** merges tombstones *before* the "push every local note not in the mirror"
+  pass, which is what stops the resurrection: the stale local copy is gone by then.
+- **Converging writers.** Two devices deleting at once each overwrite the single item, so a
+  device that finds itself ahead of what it just received re-pushes the union (same
+  pattern as `s:nbs`). `pruneTombstones` now breaks ties by id — without that, two devices
+  pruning a subtree deleted in one instant could keep different entries and each see the
+  other as "ahead" forever. Tombstones go out first in a flush, ahead of notebooks and
+  notes.
+- **Bounded.** 90 days (the notebook TTL) and 200 entries (~5.4KB, inside the 8KB item cap;
+  `buildSyncTombstones` also trims if imported ids are oversized). 
+- **Not tombstoned:** a note still waiting for its first push (`dirtyPush` and not
+  mirrored) — no other device can have it, and Enter-then-Backspace on a blank line is the
+  commonest delete there is. Also notes that go with a deleted *notebook* (its own
+  tombstone covers them).
+- **Restoring from a backup.** A JSON import whose notes include one deleted since the
+  export would be re-killed by its own tombstone on the next sync, so such a note's
+  `updatedAt` is bumped to now on import (the one place import doesn't keep timestamps
+  exactly). It counts as an edit after the delete.
+
+**Scope limits.** A device offline longer than 90 days, or across more than 200 deletes,
+can still resurrect a note it holds — the cost of keeping this in one item. Devices on a
+version older than this still won't apply deletes (and still re-push), so the fix reaches
+each device as it updates. Verified against the store harness in both key orders (insertion
+and sorted): restart-doesn't-resurrect, live propagation with a subtree, edit-after-delete
+wins, eviction-is-not-a-delete, blank lines leave no tombstone, 300 deletes stay inside one
+item, backup-restore isn't re-killed, Replace import propagates its removals, and
+concurrent deletes converge and stop writing. The browser harness is unchanged at 23/23.
+Not exercised on two real signed-in profiles, like the rest of sync.
 
 ---
 
@@ -938,9 +982,10 @@ file changes nothing — then asks **Merge** (union; where an id exists on both 
 newer `updatedAt` wins) or **Replace everything**. Either way the result is repaired to
 the §4.1 invariants (orphans to root, cycles broken, depth capped, children/rootOrder
 rebuilt from `parentId`) and written in one `persist()`. Replace tombstones notebooks
-that aren't in the file, so it reaches synced devices; notes in notebooks that survive
-are subject to the open note-delete issue in §4.3. Timestamps are kept exactly as
-exported, so on a synced setup a note edited elsewhere *after* the backup still wins.
+that aren't in the file, and (§4.4) tombstones the notes it drops from notebooks that
+survive, so it reaches synced devices. Timestamps are kept exactly as exported — except a
+note deleted since the export, which is bumped so its own tombstone doesn't re-kill it — so
+on a synced setup a note edited elsewhere *after* the backup still wins.
 Verified end to end in the browser: export → `storage.local.clear()` +
 `storage.sync.clear()` → reload → import (Replace) via the UI reproduces the exported
 data exactly (deep-equal), with `validateTree()` clean.
@@ -977,8 +1022,8 @@ P0 ✅ ──►  F1 ✅ ──┬──►  F2 ✅ ──►  F5 ✅
                    └──►  F4 ✅
 ```
 
-**All five phases are done.** What's next is the open item in §4.3 (note-delete
-tombstones), a real-Chrome pass on two signed-in profiles (the one thing no harness here
+**All five phases are done**, and the one open data issue (note-delete tombstones, §4.4)
+is fixed. What's next is a real-Chrome pass on two signed-in profiles (the one thing no harness here
 covers — cross-device sync has only run against the stub), then §12. Phase 6 (§11,
 layout and tree UX) landed after all five.
 

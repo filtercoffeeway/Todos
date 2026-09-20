@@ -29,8 +29,10 @@ hide-done and archive, the Cmd/Ctrl+K palette (`js/palette.js`) with `is:`/`site
 `after:`/`#tag` filters, notebooks (tabs, synced via one `s:nbs` item with tombstones),
 Markdown export and JSON export/import. New permissions: `contextMenus`, `favicon`.
 ROADMAP.md §4.3 lists F1 bugs fixed along the way (fresh-device tree flattening, dropped
-keystrokes from the sync echo, newline loss) and the one known open data issue: **note
-deletes can be resurrected by another device's re-push** — needs per-note tombstones.
+keystrokes from the sync echo, newline loss) and §4.4: note deletes used to be
+resurrected by another device's re-push; they now propagate via per-note tombstones (one
+synced `tomb:notes` item, 90 days / 200 entries, "covers a note not edited since the
+delete"). No open data issues remain, other than the two-real-profiles check below.
 
 ## Layout and tree UX: reworked (Phase 6 — see ROADMAP.md §11)
 

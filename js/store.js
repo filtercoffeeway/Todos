@@ -13,6 +13,7 @@
  *                 collapsed, archived, createdAt, updatedAt, source, tags:[...]}
  *   notebooks_meta: {orderUpdatedAt, activeId, activeUpdatedAt,
  *                    tombstones: {<notebookId>: deletedAt}}   // F5-1, synced
+ *   note_tombstones: {<noteId>: deletedAt}                    // §4.3, synced (tomb:notes)
  *   prefs: {hideDone, captureTarget, theme}                   // device-local UI prefs
  *   last_edited_note_id: "<id>"                               // F2-4 capture target
  *
@@ -50,6 +51,11 @@
     // offline and still expects a delete to reach it.
     var NB_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
     var NB_TOMBSTONE_MAX = 100;
+    // Note tombstones (§4.3): {noteId: deletedAt}, local key + one synced
+    // item. ~27 bytes an entry, so 200 is ~5.4KB -- inside the 8KB item cap
+    // with room to spare. Same 90-day TTL as notebooks.
+    var NOTE_TOMBS_KEY = 'note_tombstones';
+    var NOTE_TOMBSTONE_MAX = 200;
 
     var chromeRef = root.chrome;
 
@@ -74,6 +80,10 @@
     // F5-1: every notebook's name/order/active-notebook/tombstones, in one
     // small item. Not a note -- every loop over `s:` keys must skip it.
     var SYNC_NBS_KEY = 's:nbs';
+    // Note tombstones. Deliberately NOT under `s:`: a version that predates
+    // them treats every other `s:` key as a note and would adopt this item as
+    // a note with id "tomb".
+    var SYNC_TOMB_KEY = 'tomb:notes';
     var DEVICE_ID_LOCAL_KEY = 'device_id';
     // Chrome's real limits (ROADMAP.md §4): MAX_ITEMS 512, QUOTA_BYTES
     // 102400, QUOTA_BYTES_PER_ITEM 8192, MAX_WRITE_OPERATIONS_PER_MINUTE
@@ -101,6 +111,8 @@
     var syncErrorListeners = [];
     var nbsDirty = false;    // s:nbs needs pushing
     var nbsBytes = 0;        // last known size of s:nbs, for the total-bytes budget
+    var tombsDirty = false;  // tomb:notes needs pushing
+    var tombBytes = 0;       // last known size of tomb:notes, likewise
     // Remote notes whose notebook doesn't exist here yet (it may arrive in
     // a later s:nbs change). Adopted once the notebook shows up.
     var parkedRemote = {};
@@ -427,12 +439,18 @@
     // ever change a `children`/`rootOrder` array, which isn't synced, so
     // they don't requeue a write for no reason.
     //
+    // Deletes (§4.3). A note vanishing from the mirror could be a delete or
+    // just eviction from *that device's* budget, so absence never deletes
+    // anything. Deletes are explicit: deleteNote records {id: deletedAt} in
+    // `note_tombstones`, mirrored as the single item `tomb:notes`. A
+    // tombstone is a claim about a moment, not about the id: it kills a
+    // note whose updatedAt is <= deletedAt and nothing later, so an edit
+    // made elsewhere after the delete still wins (and there is nothing to
+    // un-tombstone). Tombstones expire after 90 days and are capped at
+    // NOTE_TOMBSTONE_MAX, so a device offline longer than that -- or across
+    // more deletes than that -- can still resurrect a note.
+    //
     // Known scope limits, not solved here:
-    // - No tombstones. A note disappearing from another device's mirror
-    //   could mean it was deleted there, or just evicted from *their*
-    //   budget -- we can't tell the two apart, so deletions do not
-    //   propagate across devices via sync. (A delete still removes the
-    //   local copy and its own mirror entry on the device it happened on.)
     // - Sibling order (`rootOrder`/`children`) isn't synced -- only
     //   `parentId` is, per note. Cross-device tree *membership* converges;
     //   the exact order within a level may not.
@@ -495,6 +513,10 @@
         armFlushTimer(SYNC_DEBOUNCE_MS);
     }
 
+    function syncPending() {
+        return dirtyPush.size > 0 || dirtyRemove.size > 0 || nbsDirty || tombsDirty;
+    }
+
     // A simple 60-second window counter, reset lazily on the first call
     // after it elapses. See SYNC_WRITE_BUDGET_PER_MINUTE above for why
     // every key in a set()/remove() call spends one credit.
@@ -532,8 +554,8 @@
     // Returns false in that case.
     function makeRoomFor(size, excludeId, candidateArchived) {
         while (
-            syncedIds.size >= SYNC_MAX_ITEMS - 2 || // reserve slots for s:meta and s:nbs
-            currentSyncedBytesTotal() + nbsBytes + size > SYNC_TOTAL_BYTES_BUDGET
+            syncedIds.size >= SYNC_MAX_ITEMS - 3 || // reserve slots for s:meta, s:nbs and tomb:notes
+            currentSyncedBytesTotal() + nbsBytes + tombBytes + size > SYNC_TOTAL_BYTES_BUDGET
         ) {
             var oldestId = null;
             var oldestUpdatedAt = Infinity;
@@ -562,7 +584,7 @@
 
     function flushDirty() {
         if (flushing || !syncEnabled) { return; }
-        if (dirtyPush.size === 0 && dirtyRemove.size === 0 && !nbsDirty) { return; }
+        if (!syncPending()) { return; }
         flushing = true;
 
         // Resolve sizes / oversized flags / eviction bookkeeping for every
@@ -595,15 +617,20 @@
 
         var removeIds = Array.from(dirtyRemove);
         var wantNbs = nbsDirty;
-        // +1 for s:meta, +1 for s:nbs when it's dirty.
-        var reservation = reserveCredits(candidates.length + removeIds.length + 1 + (wantNbs ? 1 : 0));
+        var wantTombs = tombsDirty;
+        // +1 for s:meta, +1 each for s:nbs / tomb:notes when dirty. Tombstones
+        // go first: a note pushed without the delete that explains it is how
+        // it gets resurrected.
+        var reservation = reserveCredits(candidates.length + removeIds.length + 1 + (wantNbs ? 1 : 0) + (wantTombs ? 1 : 0));
         var budget = Math.max(0, reservation.granted - 1);
+        var sendTombs = wantTombs && budget > 0;
+        if (sendTombs) { budget--; }
         var sendNbs = wantNbs && budget > 0;
         if (sendNbs) { budget--; }
         var pushNow = candidates.slice(0, budget);
         var removeNow = removeIds.slice(0, Math.max(0, budget - pushNow.length));
 
-        if (!sendNbs && pushNow.length === 0 && removeNow.length === 0) {
+        if (!sendTombs && !sendNbs && pushNow.length === 0 && removeNow.length === 0) {
             flushing = false;
             armFlushTimer(reservation.retryInMs || SYNC_DEBOUNCE_MS);
             return;
@@ -611,13 +638,19 @@
 
         var payload = {};
         pushNow.forEach(function (c) { payload[SYNC_PREFIX + c.id] = c.syncNote; });
+        if (sendTombs) {
+            var tombObj = buildSyncTombstones();
+            payload[SYNC_TOMB_KEY] = tombObj;
+            tombBytes = byteLength(JSON.stringify(tombObj));
+            tombsDirty = false;
+        }
         if (sendNbs) {
             var nbsObj = buildSyncNotebooks();
             payload[SYNC_NBS_KEY] = nbsObj;
             nbsBytes = byteLength(JSON.stringify(nbsObj));
             nbsDirty = false;
         }
-        if (pushNow.length || sendNbs) {
+        if (pushNow.length || sendNbs || sendTombs) {
             payload[SYNC_META_KEY] = { schemaVersion: SCHEMA_VERSION, deviceId: deviceId, updatedAt: now() };
         }
 
@@ -635,10 +668,11 @@
                 syncedSizes.delete(id);
             });
             flushing = false;
-            if (dirtyPush.size || dirtyRemove.size || nbsDirty) { armFlushTimer(0); }
+            if (syncPending()) { armFlushTimer(0); }
         }, function (err) {
             console.error('Todos: sync mirror write failed', err);
             if (sendNbs) { nbsDirty = true; }
+            if (sendTombs) { tombsDirty = true; }
             // Leave dirtyPush/dirtyRemove as they are so this retries; the
             // optimistic syncedIds/syncedSizes bookkeeping above is left in
             // place too -- worst case a note thinks it has a mirror slot it
@@ -790,6 +824,13 @@
     function mergeRemoteNote(id, remote) {
         var local = cache[noteKey(id)];
         if (!local) {
+            // Deleted here, and not touched anywhere since: a stale copy
+            // some device re-pushed. Don't adopt it, and clear it out.
+            var deletedAt = (cache[NOTE_TOMBS_KEY] || {})[id];
+            if (deletedAt !== undefined && (remote.updatedAt || 0) <= deletedAt) {
+                queueSyncRemoval(id);
+                return false;
+            }
             return adoptRemoteAsNewLocalNote(id, remote);
         }
         if (remoteWins(remote, local)) {
@@ -823,6 +864,117 @@
         return changed;
     }
 
+    // ---- note tombstones (§4.3) -------------------------------------------
+
+    function noteTombs() {
+        return assign({}, cache[NOTE_TOMBS_KEY]);
+    }
+
+    // The tombstone map with `ids` added at `ts`, pruned. For a persist().
+    function withNoteTombstones(ids, ts) {
+        var tombs = noteTombs();
+        ids.forEach(function (id) { tombs[id] = ts; });
+        return pruneTombstones(tombs, NOTE_TOMBSTONE_MAX);
+    }
+
+    function markTombsDirty() {
+        if (!syncEnabled) { return; } // bootstrapSync compares and pushes once it runs
+        tombsDirty = true;
+        scheduleFlush();
+    }
+
+    // Take `id` out of the mirror if it's in there. Callers schedule the flush.
+    function queueSyncRemoval(id) {
+        if (!dirtyPush || !syncedIds) { return; }
+        dirtyPush.delete(id);
+        if (syncedIds.has(id)) { dirtyRemove.add(id); }
+    }
+
+    function buildSyncTombstones() {
+        var tombs = pruneTombstones(noteTombs(), NOTE_TOMBSTONE_MAX);
+        var obj = { tombstones: tombs, _dev: deviceId };
+        // Ids are ours (~27 bytes an entry) so the cap already fits; this is
+        // for an imported backup with oversized ids. Oldest go first.
+        while (byteLength(JSON.stringify(obj)) > SYNC_ITEM_MAX_BYTES && Object.keys(tombs).length) {
+            var oldest = Object.keys(tombs).sort(function (a, b) { return tombs[a] - tombs[b]; })[0];
+            delete tombs[oldest];
+        }
+        return obj;
+    }
+
+    // True if we know a delete the remote item doesn't (so it should be pushed).
+    function localTombsAhead(remote) {
+        var rTombs = (remote && remote.tombstones) || {};
+        var local = noteTombs();
+        return Object.keys(local).some(function (id) {
+            return !(rTombs[id] >= local[id]);
+        });
+    }
+
+    // Applies another device's deletes: records them, and removes every local
+    // note they cover (updatedAt <= deletedAt -- a later edit survives).
+    // Runs before the remote notes in the same batch are merged, so a stale
+    // copy in that batch is refused by mergeRemoteNote rather than adopted.
+    function mergeRemoteNoteTombstones(remote) {
+        var remoteTombs = remote && remote.tombstones;
+        if (!remoteTombs || typeof remoteTombs !== 'object') { return; }
+        var tombs = noteTombs();
+        var doomed = {};
+        var changed = false;
+        Object.keys(remoteTombs).forEach(function (id) {
+            var ts = remoteTombs[id];
+            if (typeof ts !== 'number') { return; }
+            if (!(tombs[id] >= ts)) { tombs[id] = ts; changed = true; }
+            var note = cache[noteKey(id)];
+            if (note && (note.updatedAt || 0) <= ts) { doomed[id] = true; }
+        });
+        var doomedIds = Object.keys(doomed);
+        if (changed || doomedIds.length) {
+            var patch = {};
+            var removeKeys = doomedIds.map(noteKey);
+            var current = function (key) { return patch[key] || cache[key]; };
+            doomedIds.forEach(function (id) {
+                var note = cache[noteKey(id)];
+                if (note.parentId && !doomed[note.parentId]) {
+                    var parent = current(noteKey(note.parentId));
+                    if (parent) {
+                        patch[noteKey(note.parentId)] = assign({}, parent, {
+                            children: parent.children.filter(function (cid) { return cid !== id; })
+                        });
+                    }
+                } else if (!note.parentId) {
+                    var nb = current(notebookKey(note.notebookId));
+                    if (nb) {
+                        patch[notebookKey(note.notebookId)] = assign({}, nb, {
+                            rootOrder: nb.rootOrder.filter(function (rid) { return rid !== id; })
+                        });
+                    }
+                }
+                // A child edited after the delete outlives its parent and
+                // lands at root, like any note whose parent is unknown here.
+                // No push: every device derives the same thing from the same
+                // tombstone, and a device that never heard of the parent
+                // already roots the child.
+                (note.children || []).forEach(function (cid) {
+                    var child = current(noteKey(cid));
+                    if (doomed[cid] || !child) { return; }
+                    patch[noteKey(cid)] = assign({}, child, { parentId: null });
+                    var cnb = current(notebookKey(child.notebookId));
+                    if (cnb && cnb.rootOrder.indexOf(cid) === -1) {
+                        patch[notebookKey(child.notebookId)] = assign({}, cnb, { rootOrder: cnb.rootOrder.concat([cid]) });
+                    }
+                });
+            });
+            removeKeys.forEach(function (k) { delete patch[k]; });
+            patch[NOTE_TOMBS_KEY] = pruneTombstones(tombs, NOTE_TOMBSTONE_MAX);
+            persist(patch, removeKeys).catch(function (err) {
+                console.error('Todos: failed to apply deletes pulled from sync', err);
+            });
+            doomedIds.forEach(queueSyncRemoval);
+        }
+        if (localTombsAhead(remote)) { tombsDirty = true; }
+    }
+
     function isNoteSyncKey(key) {
         return key.indexOf(SYNC_PREFIX) === 0 && key !== SYNC_META_KEY && key !== SYNC_NBS_KEY;
     }
@@ -835,6 +987,12 @@
         if (changes[SYNC_NBS_KEY] && changes[SYNC_NBS_KEY].newValue !== undefined) {
             nbsBytes = byteLength(JSON.stringify(changes[SYNC_NBS_KEY].newValue));
             mergeRemoteNotebooks(changes[SYNC_NBS_KEY].newValue);
+        }
+        // Deletes before notes, so a stale copy arriving in this same batch
+        // is refused instead of adopted.
+        if (changes[SYNC_TOMB_KEY] && changes[SYNC_TOMB_KEY].newValue !== undefined) {
+            tombBytes = byteLength(JSON.stringify(changes[SYNC_TOMB_KEY].newValue));
+            mergeRemoteNoteTombstones(changes[SYNC_TOMB_KEY].newValue);
         }
         Object.keys(changes).forEach(function (key) {
             if (!isNoteSyncKey(key)) { return; }
@@ -861,7 +1019,7 @@
                 }
             });
         }
-        if (dirtyPush.size || dirtyRemove.size || nbsDirty) { scheduleFlush(); }
+        if (syncPending()) { scheduleFlush(); }
     }
 
     // ---- notebook sync (F5-1) ---------------------------------------------
@@ -889,12 +1047,15 @@
         };
     }
 
-    function pruneTombstones(tombstones) {
+    // Newest first, ties (a whole subtree deleted at once) broken by id: two
+    // devices pruning the same set must keep the same entries, or each would
+    // forever see the other as "ahead" and keep pushing.
+    function pruneTombstones(tombstones, max) {
         var cutoff = now() - NB_TOMBSTONE_TTL_MS;
         var ids = Object.keys(tombstones)
             .filter(function (id) { return tombstones[id] >= cutoff; })
-            .sort(function (a, b) { return tombstones[b] - tombstones[a]; })
-            .slice(0, NB_TOMBSTONE_MAX);
+            .sort(function (a, b) { return (tombstones[b] - tombstones[a]) || (a < b ? -1 : 1); })
+            .slice(0, max || NB_TOMBSTONE_MAX);
         var out = {};
         ids.forEach(function (id) { out[id] = tombstones[id]; });
         return out;
@@ -1096,6 +1257,17 @@
             }
             if (localNotebooksAhead(remoteNbs)) { nbsDirty = true; }
 
+            // Deletes before notes: a local note the tombstones cover is
+            // dropped here, before the "push everything not mirrored" pass
+            // below can send it back out.
+            var remoteTombs = allSync[SYNC_TOMB_KEY];
+            if (remoteTombs) {
+                tombBytes = byteLength(JSON.stringify(remoteTombs));
+                mergeRemoteNoteTombstones(remoteTombs);
+            } else if (localTombsAhead(null)) {
+                tombsDirty = true;
+            }
+
             var remotes = {};
             Object.keys(allSync).forEach(function (key) {
                 if (!isNoteSyncKey(key)) { return; }
@@ -1117,7 +1289,7 @@
             });
 
             syncEnabled = true;
-            if (dirtyPush.size || dirtyRemove.size || nbsDirty) { scheduleFlush(); }
+            if (syncPending()) { scheduleFlush(); }
         });
     }
 
@@ -1946,6 +2118,15 @@
             var removeKeys = subtreeIds.map(noteKey);
             var patch = {};
 
+            // Every deleted note gets a tombstone, except one still waiting
+            // for its first push: no other device can have it, and the
+            // Enter-then-Backspace blank line is the commonest delete there
+            // is -- it would burn the cap on nothing.
+            var tombIds = subtreeIds.filter(function (sid) {
+                return !(dirtyPush && syncedIds && dirtyPush.has(sid) && !syncedIds.has(sid));
+            });
+            if (tombIds.length) { patch[NOTE_TOMBS_KEY] = withNoteTombstones(tombIds, now()); }
+
             if (note.parentId) {
                 var parent = cache[noteKey(note.parentId)];
                 if (parent) {
@@ -1965,6 +2146,7 @@
 
             return persist(patch, removeKeys).then(function () {
                 subtreeIds.forEach(markRemovedForSync);
+                if (tombIds.length) { markTombsDirty(); }
             });
         });
     };
@@ -2189,9 +2371,9 @@
     //   'merge' (default): union with what's here; for ids on both sides,
     //     the newer updatedAt wins.
     //   'replace': the imported set becomes the whole store. Notebooks that
-    //     aren't in the import are tombstoned, so the replace reaches other
-    //     synced devices too (their notes in notebooks that *do* survive
-    //     aren't deleted there -- no per-note tombstones yet, see §4.2 F1-3).
+    //     aren't in the import are tombstoned, and so are the notes it drops
+    //     from notebooks that survive, so the replace reaches other synced
+    //     devices too.
     // Validates (schema_version first) before touching anything, repairs
     // the result to the §4.1 invariants, and writes it in one persist().
     Store.importJSON = function (payload, opts) {
@@ -2204,6 +2386,18 @@
             var removeKeys = [];
             var changedNoteIds = [];
             var removedNoteIds = [];
+            var tombIds = [];
+            // A backup can hold a note deleted since. Left as exported, its
+            // own tombstone would cover it and the next sync would delete it
+            // again -- so restoring it counts as an edit after the delete.
+            // (The one place an import doesn't keep timestamps exactly.)
+            var deletedAt = cache[NOTE_TOMBS_KEY] || {};
+            Object.keys(finalSet.notes).forEach(function (id) {
+                var n = finalSet.notes[id];
+                if (deletedAt[id] !== undefined && (n.updatedAt || 0) <= deletedAt[id]) {
+                    finalSet.notes[id] = assign({}, n, { updatedAt: Math.max(now(), deletedAt[id] + 1) });
+                }
+            });
             Object.keys(finalSet.notes).forEach(function (id) {
                 var n = finalSet.notes[id];
                 if (!sameValue(cache[noteKey(id)], n)) {
@@ -2223,6 +2417,8 @@
                     if (k.indexOf('note:') === 0 && !finalSet.notes[k.slice(5)]) {
                         removeKeys.push(k);
                         removedNoteIds.push(k.slice(5));
+                        // Notes of a removed notebook go with its tombstone.
+                        if (finalSet.notebooks[cache[k].notebookId]) { tombIds.push(k.slice(5)); }
                     } else if (k.indexOf('notebook:') === 0 && !finalSet.notebooks[k.slice(9)]) {
                         removeKeys.push(k);
                         meta.tombstones[k.slice(9)] = ts;
@@ -2244,11 +2440,13 @@
             // wins LWW over the imported copy.
             patch[NB_META_KEY] = meta;
             patch.schema_version = SCHEMA_VERSION;
+            if (tombIds.length) { patch[NOTE_TOMBS_KEY] = withNoteTombstones(tombIds, ts); }
 
             return persist(patch, removeKeys).then(function () {
                 changedNoteIds.forEach(markDirtyForSync);
                 removedNoteIds.forEach(markRemovedForSync);
                 markNotebooksDirty();
+                if (tombIds.length) { markTombsDirty(); }
                 return {
                     mode: mode,
                     notebooks: finalSet.order.length,
