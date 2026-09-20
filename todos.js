@@ -453,10 +453,20 @@ window.onload = function() {
         }
         var toggle = row.querySelector('.toggle');
         if (toggle && view === 'main') {
-            var hasKids = visibleChildCount(note) > 0;
-            toggle.textContent = hasKids ? (note.collapsed ? '▸' : '▾') : '';
-            toggle.title = hasKids ? (note.collapsed ? 'Expand' : 'Collapse') : '';
-            toggle.classList.toggle('toggle-empty', !hasKids);
+            var kids = visibleChildCount(note);
+            var collapsed = kids > 0 && !!note.collapsed;
+            toggle.textContent = kids > 0 ? (collapsed ? '▸' : '▾') : '';
+            toggle.title = kids > 0 ? (collapsed ? 'Expand' : 'Collapse') : '';
+            toggle.classList.toggle('toggle-empty', kids === 0);
+            // The triangle itself only shows on hover now, so a collapsed
+            // row needs a standing signal of its own -- otherwise hidden
+            // subtasks are invisible until you happen to mouse over.
+            row.classList.toggle('is-collapsed', collapsed);
+            var count = row.querySelector('.subcount');
+            if (count) {
+                count.textContent = collapsed ? String(kids) : '';
+                count.title = collapsed ? kids + ' hidden subtask' + (kids === 1 ? '' : 's') : '';
+            }
         }
     }
 
@@ -484,65 +494,80 @@ window.onload = function() {
         row.dataset.depth = String(depth);
         row.style.setProperty('--depth', depth);
 
-        row.appendChild(getRemoveBtn());
-        if (!archiveView) {
-            row.appendChild(getSubTaskBtn());
-        } else if (depth === 0) {
-            row.appendChild(getRestoreBtn());
-        } else {
-            row.appendChild(getSpacer());
-        }
         row.appendChild(getToggle());
         row.appendChild(getCheck(archiveView));
 
         var body = document.createElement('div');
         body.className = 'note-body';
+        if (!archiveView) {
+            // The text is a flex item now, so it stops at the end of its
+            // content instead of filling the row. Clicking the empty space
+            // beside a note is how you put the caret in it, so the body
+            // forwards its own clicks. mousedown, not click, to avoid a
+            // frame where the row is focused but the caret has not moved.
+            body.addEventListener('mousedown', function(e) {
+                if (e.target !== body) {
+                    return;
+                }
+                e.preventDefault();
+                focusRowEnd(row);
+            }, false);
+        }
         var noteTxt = getNoteElement(archiveView);
         fillNoteText(noteTxt, note.text);
         body.appendChild(noteTxt);
+        body.appendChild(getSubCount());
         var chip = getSourceChip(note.source);
         if (chip) {
             body.appendChild(chip);
         }
         row.appendChild(body);
 
-        if (!archiveView) {
-            row.appendChild(getArchiveBtn());
+        if (archiveView) {
+            if (depth === 0) {
+                row.appendChild(getRowActions([getRestoreBtn()]));
+            }
+        } else {
+            row.appendChild(getRowActions([getArchiveBtn(), getDeleteBtn()]));
         }
         applyRowChrome(row);
         return row;
     }
 
-    // returns a remove button element
-    function getRemoveBtn() {
-        let div = document.createElement('div');
-        div.className = 'ctl';
-        div.innerHTML = '<img src="images/remove.png" class="btn-remove" title="Delete"/>';
-        div.addEventListener('click', removeNote, false);
-
-        return div;
+    // Hover-revealed row controls, grouped so they read as one affordance
+    // instead of lone boxes floating at the window edge. Nothing here is
+    // the only way to do its job: delete is also Backspace on an empty
+    // line, and there is no "add subtask" button at all any more -- Tab
+    // indents, the way every outliner does it.
+    function getRowActions(buttons) {
+        let wrap = document.createElement('div');
+        wrap.className = 'ctl row-actions';
+        buttons.forEach(function(btn) { wrap.appendChild(btn); });
+        return wrap;
     }
 
-    // returns a Subtask button element
-    function getSubTaskBtn() {
-        let div = document.createElement('div');
-        div.className = 'ctl';
-        div.innerHTML = '<img src="images/subtask.png" class="btn-subtask" title="Add subtask"/>';
-        div.addEventListener('click', createSubTask, false);
-
-        return div;
+    function getDeleteBtn() {
+        let btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'row-action row-action-danger';
+        btn.textContent = 'delete';
+        btn.title = 'Delete this note and its subtasks';
+        btn.addEventListener('click', removeNote, false);
+        return btn;
     }
 
-    function getSpacer() {
-        let div = document.createElement('div');
-        div.className = 'ctl ctl-spacer';
-        return div;
+    // Count of hidden children, shown only while a row is collapsed --
+    // collapsing hides data, so it must stay visible without hovering.
+    function getSubCount() {
+        let span = document.createElement('span');
+        span.className = 'subcount';
+        return span;
     }
 
     function getRestoreBtn() {
         let btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'ctl row-action row-action-visible';
+        btn.className = 'row-action row-action-visible';
         btn.textContent = 'restore';
         btn.title = 'Move back to the list';
         btn.addEventListener('click', restoreNote, false);
@@ -552,7 +577,7 @@ window.onload = function() {
     function getArchiveBtn() {
         let btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'ctl row-action';
+        btn.className = 'row-action';
         btn.textContent = 'archive';
         btn.title = 'Archive (hide from the list, keep searchable)';
         btn.addEventListener('click', archiveNote, false);
@@ -826,51 +851,74 @@ window.onload = function() {
         );
     }
 
-    // Inserts a new empty child as the last child of `currentRow`. A depth-
-    // cap rejection is refused silently (setStatus back to idle), matching
-    // the old "idx == 3: return" no-op at the hardcoded 3-level cap. A
-    // collapsed parent is expanded first -- a new line you can't see isn't
-    // one you can type into.
-    function insertChild(currentRow) {
-        var depth = Number(currentRow.dataset.depth) + 1;
-        var currentText = noteTextOf(currentRow);
-        var parent = Store.peekNote(currentRow.id);
-        var wasCollapsed = !!(parent && parent.collapsed);
+    // F6: Tab makes `row` the last child of the sibling above it -- the
+    // outliner gesture that replaced the per-row "add subtask" button.
+    // Silently refuses when there is no sibling above (nothing to nest
+    // under), matching how the old button no-opped at the depth cap.
+    //
+    // The cap check is ours rather than the Store's on purpose:
+    // Store.moveNote only validates the depth of the note being moved, so
+    // a two-level subtree moved to depth 5 would slip its descendants past
+    // MAX_DEPTH. Measure the whole subtree before asking.
+    function indentRow(row) {
+        var prev = previousSiblingRow(row);
+        if (!prev) {
+            return Promise.resolve(null);
+        }
+        var newDepth = Number(prev.dataset.depth) + 1;
+        if (newDepth + subtreeHeight(row.id) >= Store.MAX_DEPTH) {
+            return Promise.resolve(null);
+        }
+        var rowId = row.id;
+        var parentId = prev.id;
+        var text = noteTextOf(row);
 
-        setStatus('saving', 'Saving…');
         return withLocalMutation(
-            Store.updateNote(currentRow.id, { text: currentText, collapsed: false }).then(function() {
-                return Store.createNote({
-                    notebookId: activeNotebookId,
-                    parentId: currentRow.id,
-                    text: ''
-                });
-            }).then(function(note) {
-                setStatus('saved', 'Saved');
-                if (wasCollapsed) {
-                    return render().then(function() {
-                        focusRowEnd(document.getElementById(note.id));
-                        return document.getElementById(note.id);
-                    });
-                }
-                var row = createRowElement(note, depth);
-                var anchor = lastRowOfSubtree(currentRow);
-                suppressBlur = true;
-                data.insertBefore(row, anchor.nextSibling);
-                suppressBlur = false;
-                refreshAncestorChrome(row);
-                row.querySelector('.note-text').focus();
-                return row;
-            }, function(err) {
-                if (isDepthCapError(err)) {
-                    setStatus('saved', '');
-                    return null;
-                }
-                console.error('Todos: failed to create subtask', err);
-                setStatus('failed', 'Not saved — '.concat(errorText(err)));
+            withStatus(
+                Store.updateNote(rowId, { text: text })
+                    // A collapsed new parent would swallow the row whole;
+                    // expand it so the caret lands somewhere visible.
+                    .then(function() { return Store.updateNote(parentId, { collapsed: false }); })
+                    .then(function() { return Store.moveNote(rowId, { parentId: parentId }); })
+            )
+                .then(function() { return render(); })
+                .then(function() {
+                    var newRow = document.getElementById(rowId);
+                    focusRowEnd(newRow);
+                    return newRow;
+                })
+        ).catch(function(err) {
+            if (!isDepthCapError(err)) {
                 throw err;
-            })
-        );
+            }
+            setStatus('saved', '');
+            return null;
+        });
+    }
+
+    // The row above `row` at the same depth, skipping back over the
+    // previous sibling's rendered subtree. Null when `row` is its parent's
+    // first child. Deliberately reads the DOM, not the Store: under "hide
+    // done" the sibling you can see is the one you mean to nest under.
+    function previousSiblingRow(row) {
+        var depth = Number(row.dataset.depth);
+        var cur = row.previousElementSibling;
+        while (cur && Number(cur.dataset.depth) > depth) {
+            cur = cur.previousElementSibling;
+        }
+        return cur && Number(cur.dataset.depth) === depth ? cur : null;
+    }
+
+    // Levels of nesting below `id` (0 for a leaf), counted in the Store so
+    // that children hidden by collapse or "hide done" still count.
+    function subtreeHeight(id) {
+        var note = Store.peekNote(id);
+        if (!note || !note.children || !note.children.length) {
+            return 0;
+        }
+        return 1 + note.children.reduce(function(deepest, childId) {
+            return Math.max(deepest, subtreeHeight(childId));
+        }, 0);
     }
 
     // Moves `row` up one level: reparents it (and, structurally, its own
@@ -885,9 +933,18 @@ window.onload = function() {
         var parentRow = document.getElementById(parentId);
         var grandParentId = parentRow ? (parentRow.dataset.parentId || null) : null;
         var rowId = row.id;
+        // Shift+Tab fires mid-line, and render() below rebuilds the row
+        // from the Store -- so whatever is on screen has to be saved here
+        // or it is lost. (The Backspace-on-empty caller saves nothing, and
+        // updateNote is a no-op when the text is unchanged.)
+        var text = noteTextOf(row);
 
         return withLocalMutation(
-            withStatus(Store.moveNote(rowId, { parentId: grandParentId, afterId: parentId }))
+            withStatus(
+                Store.updateNote(rowId, { text: text }).then(function() {
+                    return Store.moveNote(rowId, { parentId: grandParentId, afterId: parentId });
+                })
+            )
                 .then(function() { return render(); })
                 .then(function() {
                     var newRow = document.getElementById(rowId);
@@ -948,6 +1005,19 @@ window.onload = function() {
     // with it).
     function keydownEvent(e) {
         var key = e.which || e.keyCode;
+        if (key === 9) { // Tab / Shift+Tab: indent, outdent
+            var tabRow = rowOf(e);
+            if (!tabRow) {
+                return;
+            }
+            e.preventDefault();
+            if (e.shiftKey) {
+                outdentRow(tabRow).catch(noop);
+            } else {
+                indentRow(tabRow).catch(noop);
+            }
+            return;
+        }
         if (key !== 8) {
             return;
         }
@@ -966,18 +1036,6 @@ window.onload = function() {
         } else {
             deleteRowAndSubtree(row);
         }
-    }
-
-    // event handler for Subtask note button.
-    function createSubTask(e) {
-        var row = rowOf(e);
-        if (!row) {
-            return;
-        }
-        if (!noteTextOf(row)) {
-            return; // no subtasking an empty line
-        }
-        insertChild(row);
     }
 
     // triggered when the div is out of focus: persist whatever it currently

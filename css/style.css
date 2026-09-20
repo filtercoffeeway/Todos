@@ -8,6 +8,10 @@ html {
 	-webkit-font-smoothing: antialiased !important;
 }
 
+/* Capped to a reading measure. The canvas is the whole window (that is the
+   product), but the *text column* should not be: at 22px an uncapped 1400px
+   row is ~100 characters a line, and it also flung the hover band and the
+   row actions a screen's width away from the note they belong to. */
 .input {
 	font-family: 'Lato', sans-serif;
 	font-weight: 60;
@@ -18,17 +22,30 @@ html {
 	padding: 0;
 	overflow: auto;
 	margin: 3.5rem 0 0 0;
+	max-width: 1080px;
 }
 
 /* One rule for every row, at any depth -- replaces the old hardcoded
    .note1/.note2/.note3 (which also capped nesting at 3 levels, since deeper
    rows had no rule to fall back to). --depth is set inline per row by
    todos.js from the note's actual position in the tree, not guessed from
-   its id. 70px/90px reproduce the old note1/note2/note3 spacing exactly at
-   depth 0/1/2; deeper levels are new, lifted by F1-6. */
+   its id.
+
+   Indentation is padding, not margin, so the guide lines below can paint
+   through it. --gutter lines the first column up with the notebook tabs
+   (.notebook-bar's 50px left margin); --indent used to be 90px, sized for
+   the old 30px type, which put a depth-3 note a third of the way across
+   the window. */
 .input .note {
-	margin-left: calc(70px + var(--depth, 0) * 90px);
-	margin-top: 10px;
+	--gutter: 50px;
+	--indent: 30px;
+	/* One first line tall. Fixed rather than 1.3em because .ctl children
+	   set their own font-size (the toggle is smaller than the text) and
+	   em would then resolve differently per control. */
+	--row-line: 29px;
+
+	padding: 3px 40px 3px calc(var(--gutter) + var(--depth, 0) * var(--indent));
+	margin: 0;
 	outline: none;
 	spellcheck: false;
 	autocorrect: "off";
@@ -36,12 +53,30 @@ html {
 	   under them. */
 	display: flex;
 	align-items: flex-start;
-	margin-right: 40px;
 	border-radius: 6px;
+
+	/* Ancestor guide lines. Each row paints one 1px line per level above
+	   it, centred on that ancestor's toggle column: the tile repeats every
+	   --indent, and the background box is exactly --depth tiles wide, so a
+	   depth-0 row paints nothing. Drawn per row (the DOM is a flat list of
+	   siblings, not nested) and the rows are flush -- spacing is padding,
+	   not margin -- so the segments meet and read as one line. */
+	background-image: repeating-linear-gradient(to right,
+		rgba(255, 255, 255, 0.2) 0 1px, transparent 1px var(--indent));
+	background-position: calc(var(--gutter) + 10px) 0;
+	background-size: calc(var(--depth, 0) * var(--indent)) 100%;
+	background-repeat: no-repeat;
+	background-origin: border-box;
 }
 
+/* Top-level notes are the only real grouping the list has now that every
+   row's chrome is quiet, so give them the air. */
 .input .note[data-depth="0"] {
-	margin-top: 50px;
+	margin-top: 26px;
+}
+
+.input .note[data-depth="0"]:first-child {
+	margin-top: 10px;
 }
 
 /* Every control is one first-line tall, so they line up with the text. */
@@ -49,15 +84,27 @@ html {
 	flex: none;
 	display: flex;
 	align-items: center;
-	height: 1.3em;
+	height: var(--row-line);
 }
 
+/* A flex row so the hidden-subtask count can sit beside the text instead
+   of being flung to the far right of the row. The body still spans the
+   full width, and mousedown on its leftover space puts the caret in the
+   note (see createRowElement) -- as a flex item the text no longer fills
+   that space by itself. The source chip opts out onto its own line. */
 .input .note-body {
 	flex: 1 1 auto;
 	min-width: 0;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
 }
 
 .input .note-text {
+	/* min-width, not 0: an empty note is a zero-width flex item otherwise,
+	   which leaves a blank line with nothing to click on. */
+	flex: 0 1 auto;
+	min-width: 1.5em;
 	outline: none;
 	spellcheck: false;
 	autocorrect: "off";
@@ -69,33 +116,26 @@ html {
 	min-height: 1.3em;
 }
 
-.input .btn-remove,
-.input .btn-subtask {
-	width: 30px;
-	height: 30px;
-	cursor: pointer;
-}
-
-.input .btn-subtask {
-	margin-left: 30px;
-}
-
-.input .ctl-spacer {
-	width: 60px;
-}
-
-/* F3-3: disclosure triangle. Always takes its width so text lines up
-   whether or not a note has children. */
+/* F3-3: disclosure triangle, F6: hover-revealed. Still always takes its
+   width -- text has to line up whether or not a note has children -- but
+   it no longer *shows* on every row. At rest the gutter is the checkbox
+   and nothing else; the triangle fades in when you point at the row, or
+   stays up on its own when the row is collapsed (see .is-collapsed). */
 .input .toggle {
-	width: 34px;
+	width: 22px;
 	justify-content: center;
-	font-size: 20px;
-	/* .ctl's 1.3em is relative to this smaller font; 1.95em x 20px = the
-	   same 39px first line as the 30px text. */
-	height: 1.95em;
-	color: rgba(255, 255, 255, 0.7);
+	font-size: 13px;
+	color: rgba(255, 255, 255, 0.6);
 	cursor: pointer;
 	user-select: none;
+	opacity: 0;
+	transition: opacity 0.12s ease-out;
+}
+
+.input .note:hover > .toggle,
+.input .note:focus-within > .toggle,
+.input .note.is-collapsed > .toggle {
+	opacity: 1;
 }
 
 .input .toggle-empty {
@@ -103,18 +143,20 @@ html {
 }
 
 /* F3-1/F3-2: checkbox. done = filled check; derived (all children done,
-   the note itself not yet) = hollow check; partial = dash. */
+   the note itself not yet) = hollow check; partial = dash. It is the
+   row's anchor now that the icon buttons are gone -- the one thing always
+   drawn in the gutter -- so it sits a little quieter than it did. */
 .input .check {
-	width: 22px;
-	height: 22px;
+	width: 18px;
+	height: 18px;
 	box-sizing: border-box;
-	border: 2px solid rgba(255, 255, 255, 0.75);
+	border: 2px solid rgba(255, 255, 255, 0.55);
 	border-radius: 5px;
-	margin: 0 16px 0 2px;
+	margin: 0 12px 0 0;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 16px;
+	font-size: 13px;
 	line-height: 1;
 	cursor: pointer;
 	user-select: none;
@@ -153,6 +195,23 @@ html {
 	opacity: 0.45;
 }
 
+/* F6: how many subtasks a collapsed row is hiding. Nothing is drawn when
+   the row is expanded, so it costs no width in the common case. */
+.input .subcount {
+	display: inline-block;
+	margin-left: 10px;
+	padding: 0 7px;
+	border-radius: 9px;
+	background: rgba(255, 255, 255, 0.12);
+	color: rgba(255, 255, 255, 0.65);
+	font: 11px Verdana, sans-serif;
+	letter-spacing: 0.03em;
+}
+
+.input .subcount:empty {
+	display: none;
+}
+
 /* F4-4 */
 .input .tag {
 	color: #9fd3ff;
@@ -171,6 +230,7 @@ html {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
+	flex-basis: 100%;
 	margin-top: 2px;
 	font-size: 13px;
 	letter-spacing: 0.02em;
@@ -188,35 +248,45 @@ html {
 	height: 14px;
 }
 
-/* F3-4: shown on hover, so it costs nothing visually the rest of the time. */
-.input .row-action {
-	margin-left: 12px;
-	background: none;
-	border: 1px solid rgba(255, 255, 255, 0.35);
-	border-radius: 4px;
-	color: rgba(255, 255, 255, 0.8);
-	font: 12px Verdana, sans-serif;
-	padding: 2px 8px;
-	height: auto;
-	/* centred on the first line (39px), not the whole wrapped row */
-	margin-top: 9px;
-	cursor: pointer;
+/* F3-4/F6: shown on hover, so they cost nothing visually the rest of the
+   time. Grouped in one .row-actions container (F6) -- as loose buttons
+   they read as unrelated boxes stranded at the window edge. */
+.input .row-actions {
+	margin-left: 16px;
+	gap: 6px;
 	opacity: 0;
+	transition: opacity 0.12s ease-out;
 }
 
-.input .note:hover > .row-action,
-.input .note:focus-within > .row-action,
-.input .row-action-visible {
-	opacity: 0.7;
-}
-
-.input .row-action:hover {
+.input .note:hover > .row-actions,
+.input .note:focus-within > .row-actions,
+.input .row-actions:has(.row-action-visible) {
 	opacity: 1;
 }
 
-.input .row-action-visible {
-	margin: 9px 0 0 0;
-	width: 60px;
+.input .row-action {
+	background: none;
+	border: 1px solid rgba(255, 255, 255, 0.25);
+	border-radius: 4px;
+	color: rgba(255, 255, 255, 0.65);
+	font: 11px Verdana, sans-serif;
+	letter-spacing: 0.03em;
+	padding: 2px 8px;
+	cursor: pointer;
+}
+
+.input .row-action:hover {
+	color: #fff;
+	border-color: rgba(255, 255, 255, 0.6);
+}
+
+.input .row-action-danger:hover {
+	color: #ff8a7a;
+	border-color: rgba(255, 138, 122, 0.7);
+}
+
+.input .note:hover {
+	background-color: rgba(255, 255, 255, 0.045);
 }
 
 .input .flash {
@@ -224,13 +294,13 @@ html {
 }
 
 @keyframes flash {
-	from { background: rgba(255, 230, 150, 0.35); }
-	to { background: transparent; }
+	from { background-color: rgba(255, 230, 150, 0.35); }
+	to { background-color: transparent; }
 }
 
 .input .empty-state {
-	margin: 50px 0 0 70px;
-	font-size: 20px;
+	margin: 50px 0 0 50px;
+	font-size: 16px;
 	opacity: 0.6;
 }
 
