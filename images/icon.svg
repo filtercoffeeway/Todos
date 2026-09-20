@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Todos">
+  <!-- Toolbar/store icon: the same checkbox-and-steam mark as the masthead
+       wordmark, on the brand's dark tile with a gold hairline. Used for the
+       48 and 128 renders; icon-small.svg is the 16px cut. -->
+  <rect width="128" height="128" rx="26" fill="#2C1A0E"/>
+  <rect x="3" y="3" width="122" height="122" rx="23" fill="none" stroke="#C49A3C" stroke-width="2" opacity="0.7"/>
+  <path d="M 44 42 Q 38 32 44 22" fill="none" opacity="0.5" stroke="#C49A3C" stroke-linecap="round" stroke-width="5"/>
+  <path d="M 64 39 Q 58 28 64 17" fill="none" opacity="0.5" stroke="#C49A3C" stroke-linecap="round" stroke-width="5"/>
+  <path d="M 84 42 Q 78 32 84 22" fill="none" opacity="0.5" stroke="#C49A3C" stroke-linecap="round" stroke-width="5"/>
+  <rect x="30" y="50" width="68" height="64" rx="14" fill="none" stroke="#8B5E3C" stroke-width="7"/>
+  <path d="M 46 82 L 60 96 L 84 64" fill="none" stroke="#C49A3C" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+</svg>
