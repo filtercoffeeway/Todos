@@ -7,3 +7,9 @@
 
 # node (only ever used for local test harnesses; the extension itself has no deps)
 node_modules/
+
+# Store listing assets (demo video/images), not part of the extension package
+store-assets/
+
+# Generated submission package (copy of tracked files, for zipping)
+chrome-store-package/
