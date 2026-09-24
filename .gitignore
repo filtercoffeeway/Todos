@@ -13,3 +13,4 @@ store-assets/
 
 # Generated submission package (copy of tracked files, for zipping)
 chrome-store-package/
+*.zip
